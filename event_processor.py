@@ -750,19 +750,20 @@ def process_events_by_type(spark: SparkSession, processed_df: DataFrame, audit_d
 
         for table_name, split_dfs in result_dict.items():
             # result_dict[table_name] is {"succeeded": df, "failed": df}
-            s_df = split_dfs.get("succeeded")
-            f_df = split_dfs.get("failed")
-            if s_df is not None:
-                if table_name not in success_accumulator:
-                    success_accumulator[table_name] = s_df
-                else:
-                    success_accumulator[table_name] = success_accumulator[table_name].unionByName(s_df)
+            succeeded_df = split_dfs.get("succeeded")
+            failed_df = split_dfs.get("failed")
             
-            if f_df is not None:
-                if table_name not in failed_accumulator:
-                    failed_accumulator[table_name] = f_df
+            if succeeded_df is not None:
+                if table_name not in success_accumulator:
+                    success_accumulator[table_name] = succeeded_df
                 else:
-                    failed_accumulator[table_name] = failed_accumulator[table_name].unionByName(f_df)
+                    success_accumulator[table_name] = success_accumulator[table_name].unionByName(succeeded_df)
+            
+            if failed_df is not None:
+                if table_name not in failed_accumulator:
+                    failed_accumulator[table_name] = failed_df
+                else:
+                    failed_accumulator[table_name] = failed_accumulator[table_name].unionByName(failed_df)
     
     # FINAL DEDUPLICATION: Pick one record per ID across all unions
     # Since these are hotel records, we usually want the LATEST one 
@@ -820,11 +821,13 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df
+            "reservationStatus": reservation_status_df,
+            "contactPurpose": contact_purpose_df
         }
 
 class ReservationCancelProcessor(BaseEventProcessor):
@@ -839,12 +842,12 @@ class ReservationCancelProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         
-        
-
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "contactPurpose": contact_purpose_df,
         }
 
 class ReservationCheckInProcessor(BaseEventProcessor):
@@ -861,11 +864,13 @@ class ReservationCheckInProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df
+            "reservationStatus": reservation_status_df,
+            "contactPurpose": contact_purpose_df,
         }
 
 class ReservationCheckOutProcessor(BaseEventProcessor):
@@ -880,11 +885,13 @@ class ReservationCheckOutProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.reservation_checkout_confirmation_number_processor(event_type, event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df
+            "reservationStatus": reservation_status_df,
+            "contactPurpose": contact_purpose_df,
         }
 
 class ReservationRoomAssignedProcessor(BaseEventProcessor):
@@ -901,11 +908,13 @@ class ReservationRoomAssignedProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df
+            "reservationStatus": reservation_status_df,
+            "contactPurpose": contact_purpose_df,
         }
 
 class ReservationRoomChangeProcessor(BaseEventProcessor):
@@ -921,11 +930,13 @@ class ReservationRoomChangeProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df
+            "reservationStatus": reservation_status_df,
+            "contactPurpose": contact_purpose_df,
         }
     
 class ReservationECheckInProcessor(BaseEventProcessor):
@@ -960,10 +971,12 @@ class ReservationEmailConfirmationProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "contactPurpose": contact_purpose_df,
         }
 
 class GroupCreateModifyProcessor(BaseEventProcessor):
@@ -978,10 +991,12 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "contactPurpose": contact_purpose_df,
         }
 
 class GroupCancelProcessor(BaseEventProcessor):
