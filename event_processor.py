@@ -3,7 +3,6 @@ from pyspark.sql import functions as F
 from typing import Dict, Callable, Any, Optional, Tuple
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType
-from json_utils import get_nested_value, extract_json_value, extract_from_array, extract_all_matching_values, extract_first_matching_value
 from typing import List
 from pyspark.sql.types import ArrayType, StringType, IntegerType, DecimalType, DateType, TimestampType, BooleanType, BinaryType, LongType
 from pyspark.sql.types import StructField, StringType, BooleanType, IntegerType, DecimalType, DateType, TimestampType
@@ -15,7 +14,7 @@ from business_keys import get_business_keys
 from pyspark_schema import get_table_schema
 from pyspark.sql.functions import when, concat, upper, substring, regexp_extract, lit
 from event_wise_tables import get_event_table_mappings
-from table_callable import get_table_callable
+from json_utils import extract_json_value
 from functools import reduce
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, date
@@ -247,7 +246,7 @@ def safe_type_conversion(value, target_type):
         return None
 
 
-def safe_batch_extract(data, field_mapping, udf_schema, extract_func):
+def safe_batch_extract(data: Any, field_mapping: Dict[str, str], udf_schema: StructType) -> Dict[str, Any]:
     """
     IMPROVED APPROACH: Return proper None values, but handle String JVM serialization.
     
@@ -269,20 +268,27 @@ def safe_batch_extract(data, field_mapping, udf_schema, extract_func):
     STRING_NULL_MARKER = "___NULL___"
     
     results = {}
+    
     for field in udf_schema.fields:
         path = field_mapping.get(field.name)
-        raw_value = extract_func(data, path)
+        if not path:
+            results[field.name] = None
+            continue
+            
+        # Use your updated utility
+        raw_value = extract_json_value(data, path)
         
-        # Use safe type conversion for all types
+        # Safe type conversion
         converted_value = safe_type_conversion(raw_value, field.dataType)
         
-        # CRITICAL FIX: For StringType with None, use marker to avoid JVM NPE
+        # JVM Null handling for Strings
         if isinstance(field.dataType, StringType) and converted_value is None:
             converted_value = STRING_NULL_MARKER
         
         results[field.name] = converted_value
     
     return results
+
 
 
 @F.udf(returnType=StringType())
@@ -296,6 +302,7 @@ class BaseEventProcessor:
     def __init__(self, spark: SparkSession, audit_dfs: Dict[str, DataFrame]):
         self.spark = spark
         self.audit_dfs = audit_dfs or {}
+        self.STRING_NULL_MARKER = "___NULL___"
         
         # Define the marker for String NULL values
         self.STRING_NULL_MARKER = "___NULL___"
@@ -374,7 +381,7 @@ class BaseEventProcessor:
         
         # If table is reservationStatus, use statusTimestamp as received_at
         if table_name == "reservationStatus":
-            df.show(20, truncate=False)
+            # df.show(20, truncate=False)
             timestamp_col = "statusTimestamp"
         else:
             timestamp_col = "event_timestamp"
@@ -409,11 +416,11 @@ class BaseEventProcessor:
                 select_expressions.append(F.lit(None).cast(field.dataType).alias(field.name))
 
         final_df = df.select(*select_expressions)
-        print("--------------------------------")
-        if table_name == "reservationStatus":
-            print("final_df")
-            final_df.show(20, truncate=False)
-        print("--------------------------------")
+        # print("--------------------------------")
+        # if table_name == "reservationStatus":
+            # print("final_df")
+            # final_df.show(20, truncate=False)
+        # print("--------------------------------")
         
         # STEP 5: VALIDATION - Split based on nullability
         # This will move records with NULL in non-nullable columns to failed_df
@@ -427,150 +434,124 @@ class BaseEventProcessor:
             "failed": failed_df
         }
     
-    def process_dataframe(self, df: DataFrame, field_mapping: Any, extract_func: Callable, table_name: str) -> dict[str, DataFrame]:
+    def process_dataframe(self, df: DataFrame, field_mapping: Any, table_name: str) -> Dict[str, DataFrame]:
         """
-        Extracts fields, generates hash and UUIDv5, and enforces the full table schema.
+        Unified entry point for extracting table data.
         """
-        # Guard: If field_mapping is None, we can't iterate to build the schema
-        if field_mapping is None or not field_mapping:
+        if not field_mapping:
             print(f"CRITICAL: No mapping found for table {table_name}. Returning empty DF.")
             empty_df = self.spark.createDataFrame([], get_table_schema(table_name))
             return {"succeeded": empty_df, "failed": empty_df}
 
-        is_array_table = table_name in ["confirmationNumber", "reservationStatus"]
+        # Handling list of mappings (common in CheckOut events)
 
         if isinstance(field_mapping, list):
             merged_mapping = {}
             for m in field_mapping:
                 if isinstance(m, dict): merged_mapping.update(m)
             field_mapping = merged_mapping
-        
-        print("--------------------------------")
+
+        # Determine if this table contains array-based rows by checking for [] in paths
+        # or by checking if the table is known to be an array table
+        is_array_table = any("[]" in str(path) for path in field_mapping.values())
         print("in process_dataframe")
         print(f"table: {table_name}")
 
         if is_array_table:
             processed_df = self._extract_array(df, field_mapping, table_name)
         else:
-            processed_df = self._extract_single(df, field_mapping, extract_func, table_name)
+            processed_df = self._extract_single(df, field_mapping, table_name)
         
         return self.finalize_and_audit(processed_df, table_name, get_table_schema(table_name))
 
-    def _extract_single(self, df: DataFrame, field_mapping: Any, extract_func: Callable, table_name: str) -> DataFrame:
-        
+    def _extract_single(self, df: DataFrame, field_mapping: Dict[str, str], table_name: str) -> DataFrame:
+        """
+        Extracts 1 row of data for every 1 event row.
+        """
         print("--------------------------------")
         print("in _extract_single")
-
         full_schema = get_table_schema(table_name)
-
-        if not callable(extract_func):
-            print(f"CRITICAL: extract_func for {table_name} is not callable. Check table_callable.py")
-            return self.spark.createDataFrame([], full_schema)
-
         udf_fields = [field for field in full_schema.fields if field.name in field_mapping]
         udf_schema = StructType(udf_fields)
 
         @F.udf(returnType=udf_schema)
-        def batch_extract_udf(raw_str):
+        def single_batch_udf(raw_str):
             if not raw_str: 
                 return None
             try:
                 data = json.loads(raw_str) if isinstance(raw_str, str) else raw_str
-                return safe_batch_extract(data, field_mapping, udf_schema, extract_func)
+                return safe_batch_extract(data, field_mapping, udf_schema)
             except Exception as e:
                 # Log the error for debugging but return None to avoid crashing
                 print(f"Error in batch_extract_udf: {str(e)}")
                 return None
         
-        df = df.withColumn("extracted_data", batch_extract_udf(F.col("raw")))
-        
-        # Extract each field from the struct
+        df = df.withColumn("extracted_data", single_batch_udf(F.col("raw")))
         for field in udf_schema.fields:
             df = df.withColumn(field.name, F.col(f"extracted_data.{field.name}"))
         
-        df = df.drop("extracted_data")
+        return df.drop("extracted_data")
 
-        return df
-    
-    def _extract_array(self, df: DataFrame, field_mapping: Any, table_name: str) -> DataFrame:
+    def _extract_array(self, df: DataFrame, field_mapping: Dict[str, str], table_name: str) -> DataFrame:
         """
-        Special handler for tables that come from JSON arrays (1 event -> multiple rows)
-        NOW WITH TYPE CONVERSION via safe_batch_extract
+        Handles 1 event -> N rows (e.g. Confirmation Numbers).
+        Uses your [] notation to zip parallel lists into rows.
         """
-
-        print("--------------------------------")
-        print("in _extract_array")
-
-        # Get the full schema for this table to apply type conversion
         full_schema = get_table_schema(table_name)
-        
-        # 1. Identify the array path (e.g. reservation.reservationConfirmationNumbers)
-        # We take the parent path from the first mapping entry
-        first_mapping_path = list(field_mapping.values())[0]
-        array_path_parts = first_mapping_path.split('.')
-
-        print(f"array path: {first_mapping_path}")
-        print(f"array path parts: {array_path_parts}")
-
-        if len(array_path_parts) > 1:
-            array_json_path = ".".join(array_path_parts[:-1])
-        else:
-            array_json_path = ""
-        
-        # 2. Extract the array string
-        json_path_query = "$" if array_json_path == "" else f"$.{array_json_path}"
-        df = df.withColumn("temp_array_str", F.get_json_object(F.col("raw"), json_path_query))
-
-        
-        # 3. Create a UDF to convert the JSON array string into a Python list of JSON object strings
-        @F.udf(returnType=ArrayType(StringType()))
-        def json_array_to_list(array_str):
-            if not array_str: return []
-            try:
-                data = json.loads(array_str)
-                return [json.dumps(obj) for obj in data] if isinstance(data, list) else []
-            except: return []
-
-
-        df = df.withColumn("exploded_json_list", json_array_to_list(F.col("temp_array_str")))
-        df = df.withColumn("single_row_json", F.explode(F.col("exploded_json_list")))
-        
-        # 4. NEW APPROACH: Use safe_batch_extract for type conversion
-        # Create a modified field mapping that uses only the leaf key
-        leaf_field_mapping = {col_name: path.split('.')[-1] for col_name, path in field_mapping.items()}
-        
-        # Build UDF schema from the fields we need to extract
         udf_fields = [field for field in full_schema.fields if field.name in field_mapping]
         udf_schema = StructType(udf_fields)
-        
-        # Define extract function for array elements (extracts from single object, not nested path)
-        def extract_from_single_object(data, key):
-            """Extract value directly from a single object using the leaf key"""
-            if isinstance(data, dict):
-                return data.get(key)
-            return None
-        
-        # Create UDF that applies safe_batch_extract to each array element
-        @F.udf(returnType=udf_schema)
-        def batch_extract_array_element(json_str):
-            if not json_str:
-                return None
+
+        @F.udf(returnType=ArrayType(udf_schema))
+        def array_batch_udf(raw_str):
+            if not raw_str: return []
             try:
-                data = json.loads(json_str) if isinstance(json_str, str) else json_str
-                return safe_batch_extract(data, leaf_field_mapping, udf_schema, extract_from_single_object)
+                data = json.loads(raw_str) if isinstance(raw_str, str) else raw_str
+                
+                # 1. Extract all fields. Since paths have [], these will be lists.
+                # Example: field_results['confirmationNumber'] = ['101', '795']
+                field_results = {}
+                max_len = 0
+                
+                for field_name, path in field_mapping.items():
+                    vals = extract_json_value(data, path)
+                    # If it's a single value, wrap in list for zipping
+                    if not isinstance(vals, list):
+                        vals = [vals] if vals is not None else []
+                    
+                    field_results[field_name] = vals
+                    max_len = max(max_len, len(vals))
+
+                # 2. Zip parallel lists into Row structures
+                rows = []
+                for i in range(max_len):
+                    row_data = {}
+                    for field in udf_schema.fields:
+                        # Get value at index i, or None if list is shorter
+                        val_list = field_results.get(field.name, [])
+                        raw_val = val_list[i] if i < len(val_list) else None
+                        
+                        # Type conversion
+                        converted = safe_type_conversion(raw_val, field.dataType)
+                        
+                        # JVM Marker
+                        if isinstance(field.dataType, StringType) and converted is None:
+                            converted = "___NULL___"
+                        row_data[field.name] = converted
+                    rows.append(row_data)
+                return rows
             except Exception as e:
-                print(f"Error in batch_extract_array_element: {str(e)}")
-                return None
+                print(f"Error in array_batch_udf: {e}")
+                return []
+
+        # Explode the list of structs into multiple rows
+        df = df.withColumn("extracted_array", array_batch_udf(F.col("raw")))
+        df = df.withColumn("exploded_row", F.explode(F.col("extracted_array")))
         
-        # Apply the UDF to extract and convert all fields at once
-        df = df.withColumn("extracted_data", batch_extract_array_element(F.col("single_row_json")))
-        
-        # Extract each field from the struct
+        # Flatten the struct columns
         for field in udf_schema.fields:
-            df = df.withColumn(field.name, F.col(f"extracted_data.{field.name}"))
-        
-        df = df.drop("temp_array_str", "exploded_json_list", "single_row_json", "extracted_data")
-        return df
+            df = df.withColumn(field.name, F.col(f"exploded_row.{field.name}"))
+            
+        return df.drop("extracted_array", "exploded_row")
 
     def generate_record_hash(self, df: DataFrame, business_fields: list, hash_column_name: str = "sha256_hash") -> DataFrame:
         """
@@ -630,7 +611,7 @@ class BaseEventProcessor:
 
         return new_records_df
     
-    def hotel_processor(self, event_type: str, event_df: DataFrame, extract_func: Callable) -> Dict[str, DataFrame]:
+    def hotel_processor(self, event_type: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         print("--------------------------------")
         print("in hotel_processor")
         print(f"event type: {event_type}")
@@ -639,7 +620,7 @@ class BaseEventProcessor:
         print(f"Hotel fields: {hotel_fields}")
         
         # 1. Get hotel dataframe with audited unique records
-        extracted_hotel_df = self.process_dataframe(event_df, hotel_fields, extract_func, table_name="hotel")
+        extracted_hotel_df = self.process_dataframe(event_df, hotel_fields, table_name="hotel")
         
         # 2. Apply Property Name Abbreviation Logic
         def abbreviate_name(df):
@@ -656,16 +637,16 @@ class BaseEventProcessor:
             "failed": abbreviate_name(extracted_hotel_df["failed"])
         }
     
-    def generic_table_processor(self, event_type: str, table_name: str, event_df: DataFrame, extract_func: Callable) -> Dict[str, DataFrame]:
+    def generic_table_processor(self, event_type: str, table_name: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         print("--------------------------------")
         print("in generic_table_processor")
         print(f"event type: {event_type}")
         print(f"table name: {table_name}")
 
         table_fields = get_event_table_mappings(event_type, table_name)
-        return self.process_dataframe(event_df, table_fields, extract_func, table_name)
+        return self.process_dataframe(event_df, table_fields, table_name)
     
-    def reservation_checkout_confirmation_number_processor(self, event_type: str, event_df: DataFrame, extract_func: Callable) -> Dict[str, DataFrame]:
+    def reservation_checkout_confirmation_number_processor(self, event_type: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         # 1. Get the mappings
         mappings = get_event_table_mappings(event_type, "confirmationNumber")
         
@@ -678,7 +659,7 @@ class BaseEventProcessor:
         f_list = []
         for mapping in mappings:
             if mapping: # Guard against None entries in list
-                res = self.process_dataframe(event_df, mapping, extract_func, table_name="confirmationNumber")
+                res = self.process_dataframe(event_df, mapping, table_name="confirmationNumber")
                 s_list.append(res["succeeded"])
                 f_list.append(res["failed"])
 
@@ -836,14 +817,14 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
-        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df, get_table_callable("reservationStatus"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df,
+            "reservationStatus": reservation_status_df
         }
 
 class ReservationCancelProcessor(BaseEventProcessor):
@@ -856,8 +837,10 @@ class ReservationCancelProcessor(BaseEventProcessor):
         print("in ReservationCancelProcessor")
         print(f"event type: {event_type}")
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        
+        
 
         return {
             "hotel": hotel_df,
@@ -875,9 +858,9 @@ class ReservationCheckInProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
-        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df, get_table_callable("reservationStatus"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
 
         return {
             "hotel": hotel_df,
@@ -894,9 +877,9 @@ class ReservationCheckOutProcessor(BaseEventProcessor):
         print("in ReservationCheckOutProcessor")
         print(f"event type: {event_type}")
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.reservation_checkout_confirmation_number_processor(event_type, event_df, get_table_callable("confirmationNumber"))
-        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df, get_table_callable("reservationStatus"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.reservation_checkout_confirmation_number_processor(event_type, event_df)
+        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         
         return {
             "hotel": hotel_df,
@@ -915,9 +898,9 @@ class ReservationRoomAssignedProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
         
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
-        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df, get_table_callable("reservationStatus"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
 
         return {
             "hotel": hotel_df,
@@ -935,9 +918,9 @@ class ReservationRoomChangeProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
-        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df, get_table_callable("reservationStatus"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         
         return {
             "hotel": hotel_df,
@@ -955,9 +938,9 @@ class ReservationECheckInProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
-        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df, get_table_callable("reservationStatus"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
 
         return {
             "hotel": hotel_df,
@@ -975,8 +958,8 @@ class ReservationEmailConfirmationProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
         
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
 
         return {
             "hotel": hotel_df,
@@ -993,8 +976,8 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
         
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
 
         return {
             "hotel": hotel_df,
@@ -1011,8 +994,8 @@ class GroupCancelProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
         
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
 
         return {
             "hotel": hotel_df,
@@ -1029,8 +1012,8 @@ class GroupCheckOutProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
 
         return {
             "hotel": hotel_df,
@@ -1047,7 +1030,7 @@ class AppliedRateUpdateProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
+        hotel_df = self.hotel_processor(event_type, event_df)
         
         return {
             "hotel": hotel_df,
@@ -1063,7 +1046,7 @@ class DiscountRateUpdateProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
+        hotel_df = self.hotel_processor(event_type, event_df)
         
         return {
             "hotel": hotel_df,
@@ -1079,7 +1062,7 @@ class FixedRateUpdateProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
+        hotel_df = self.hotel_processor(event_type, event_df)
         
         return {
             "hotel": hotel_df,
@@ -1095,7 +1078,7 @@ class BestAvailableRateUpdateProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
+        hotel_df = self.hotel_processor(event_type, event_df)
         
         return {
             "hotel": hotel_df,
@@ -1111,7 +1094,7 @@ class InventoryBatchProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
+        hotel_df = self.hotel_processor(event_type, event_df)
         
         return {
             "hotel": hotel_df,
@@ -1127,7 +1110,7 @@ class InventoryUpdateProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
+        hotel_df = self.hotel_processor(event_type, event_df)
         
         return {
             "hotel": hotel_df,
@@ -1143,8 +1126,8 @@ class housekeepingStatusProcessor(BaseEventProcessor):
         print(f"event type: {event_type}")
         
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df, get_table_callable("hotel"))
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df, get_table_callable("confirmationNumber"))
+        hotel_df = self.hotel_processor(event_type, event_df)
+        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         
 
         return {

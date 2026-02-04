@@ -35,6 +35,13 @@ def main():
             (F.col("id").isNotNull())
         )
         audit_dfs = get_audit_dfs(spark)
+        # for table_name, audit_df in audit_dfs.items():
+        #     if audit_df is not None:
+        #         print(f"Audit DataFrame for {table_name}:")
+        #         audit_df.show(truncate=False)
+        #         print("-" * 100)
+        #     else:
+        #         print(f"No audit data available for {table_name}")
         # Process sets
         success_tables, failure_tables = process_events_by_type(spark, input_df, audit_dfs)
 
