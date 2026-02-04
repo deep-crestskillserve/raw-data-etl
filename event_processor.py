@@ -158,57 +158,45 @@ def safe_type_conversion(value, target_type):
             return None
         
         elif isinstance(target_type, TimestampType):
+            # Timestamp: Handle various datetime formats
             if isinstance(value, datetime):
                 return value
             if isinstance(value, date):
                 return datetime.combine(value, datetime.min.time())
-            
-            # Handle Unix Epochs (Integers or Floats)
-            if isinstance(value, (int, float)):
+            if isinstance(value, str):
+                value = value.strip()
+                if not value or value.lower() in ('null', 'none', 'n/a', ''):
+                    return None
+                # Try common timestamp formats
+                timestamp_formats = [
+                    '%Y-%m-%d %H:%M:%S',
+                    '%Y-%m-%dT%H:%M:%S',
+                    '%Y-%m-%d %H:%M:%S.%f',
+                    '%Y-%m-%dT%H:%M:%S.%f',
+                    '%Y/%m/%d %H:%M:%S',
+                    '%d-%m-%Y %H:%M:%S',
+                    '%m-%d-%Y %H:%M:%S',
+                ]
+                for fmt in timestamp_formats:
+                    try:
+                        return datetime.strptime(value, fmt)
+                    except ValueError:
+                        continue
+                # Try ISO format with timezone
                 try:
-                    # If the number is huge, it's likely milliseconds; convert to seconds
-                    ts_val = value if value < 1e11 else value / 1000.0
-                    return datetime.fromtimestamp(ts_val)
+                    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+                except:
+                    # Last resort: try parsing just the date part
+                    try:
+                        return datetime.strptime(value[:10], '%Y-%m-%d')
+                    except:
+                        return None
+            if isinstance(value, (int, float)):
+                # Assume Unix timestamp (seconds since epoch)
+                try:
+                    return datetime.fromtimestamp(value)
                 except:
                     return None
-
-            if isinstance(value, str):
-                val_str = value.strip()
-                if not val_str or val_str.lower() in ('null', 'none', ''):
-                    return None
-                
-                # 1. Standardize 'Z' to offset format for older Python compatibility
-                # 2. Convert 'T' separator to space for general parsing
-                clean_val = val_str.replace('Z', '+00:00').replace('T', ' ')
-                clean_val = re.sub(r'(\d{2}:\d{2}:)(\d{2})(\d{1,6})', r'\1\2.\3', clean_val)
-                
-                # Try fromisoformat first (handles +HH:MM, +HHMM, and basic ISO)
-                try:
-                    return datetime.fromisoformat(clean_val)
-                except ValueError:
-                    pass
-
-                # Fallback: Cascading strptime for specific common variations
-                # We strip the timezone offset part ([+-]HH:MM) for these patterns 
-                # if isoformat failed to parse them.
-                import re
-                base_ts = re.sub(r'([+-]\d{2}:?\d{2})$', '', clean_val).strip()
-                
-                formats = [
-                    '%Y-%m-%d %H:%M:%S.%f',
-                    '%Y-%m-%d %H:%M:%S',
-                    '%Y/%m/%d %H:%M:%S',
-                    '%m/%d/%Y %H:%M:%S',
-                    '%d-%m-%Y %H:%M:%S',
-                    '%Y%m%d%H%M%S', # Totally mashed
-                    '%Y-%m-%d'
-                ]
-                
-                for fmt in formats:
-                    try:
-                        return datetime.strptime(base_ts, fmt)
-                    except:
-                        continue
             return None
         
         elif isinstance(target_type, BinaryType):
@@ -372,38 +360,6 @@ class BaseEventProcessor:
         else:
             timestamp_col = "event_timestamp"
 
-        
-
-        # STEP 4: Match schema and cast types with error handling
-        select_expressions = []
-        for field in full_schema.fields:
-            if field.name in df.columns:
-                if isinstance(field.dataType, TimestampType):
-                    # 1. Remove 'Z' or Timezone offsets
-                    # 2. Use explicit format string to handle the mashed seconds/milliseconds
-                    cleaned_ts = F.regexp_replace(F.col(field.name), r"(Z|[+-]\d{2}:?\d{2})$", "")
-                    
-                    select_expressions.append(
-                        F.coalesce(
-                            F.to_timestamp(cleaned_ts, "yyyy-MM-dd HH:mm:ssSSS"), # Mashed format
-                            F.to_timestamp(cleaned_ts, "yyyy-MM-dd'T'HH:mm:ssSSS"), # ISO mashed
-                            F.to_timestamp(F.col(field.name)), # Standard Spark discovery
-                            F.col(field.name).cast(TimestampType()) # Last resort
-                        ).alias(field.name)
-                    )
-                elif isinstance(field.dataType, (DecimalType, DateType)):
-                    # Existing logic for Date/Decimal
-                    select_expressions.append(
-                        F.when(
-                            F.col(field.name).isNotNull(),
-                            F.col(field.name).cast(field.dataType)
-                        ).otherwise(F.lit(None).cast(field.dataType)).alias(field.name)
-                    )
-                else:
-                    select_expressions.append(F.col(field.name).cast(field.dataType).alias(field.name))
-            else:
-                select_expressions.append(F.lit(None).cast(field.dataType).alias(field.name))
-
         df = df.withColumn("received_at", F.col(timestamp_col)).filter(F.col("received_at").isNotNull())
 
         # STEP 3: Generate Record Hash & UUID
@@ -413,6 +369,25 @@ class BaseEventProcessor:
         df = df.withColumn("id", to_uuid_v5(F.col("sha256_hash"))).drop("sha256_hash")
 
         df = df.filter(F.col("id").isNotNull())
+
+        # STEP 4: Match schema and cast types with error handling
+        select_expressions = []
+        for field in full_schema.fields:
+            if field.name in df.columns:
+                # Column exists: cast it to the correct type from the schema
+                if isinstance(field.dataType, (DecimalType, DateType, TimestampType)):
+                    # For these types, use safe casting
+                    select_expressions.append(
+                        F.when(
+                            F.col(field.name).isNotNull(),
+                            F.col(field.name).cast(field.dataType)
+                        ).otherwise(F.lit(None).cast(field.dataType)).alias(field.name)
+                    )
+                else:
+                    select_expressions.append(F.col(field.name).cast(field.dataType).alias(field.name))
+            else:
+                # Column does not exist: add as typed NULL
+                select_expressions.append(F.lit(None).cast(field.dataType).alias(field.name))
 
         final_df = df.select(*select_expressions)
         print("--------------------------------")
