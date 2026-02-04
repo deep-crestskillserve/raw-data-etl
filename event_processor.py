@@ -167,6 +167,25 @@ def safe_type_conversion(value, target_type):
                 value = value.strip()
                 if not value or value.lower() in ('null', 'none', 'n/a', ''):
                     return None
+                
+                # Handle malformed format like "2025-12-29 08:07:192Z"
+                # where milliseconds are missing the decimal point
+                if value.endswith('Z') and len(value) > 20:
+                    # Check if it matches pattern YYYY-MM-DD HH:MM:SSXXXZ
+                    import re
+                    malformed_pattern = r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(\d+)Z$'
+                    match = re.match(malformed_pattern, value)
+                    if match:
+                        # Extract base timestamp and milliseconds
+                        base_ts = match.group(1)
+                        millis = match.group(2)
+                        # Reconstruct with proper decimal point
+                        corrected_value = f"{base_ts}.{millis}"
+                        try:
+                            return datetime.strptime(corrected_value, '%Y-%m-%d %H:%M:%S.%f')
+                        except ValueError:
+                            pass
+                
                 # Try common timestamp formats
                 timestamp_formats = [
                     '%Y-%m-%d %H:%M:%S',
@@ -476,11 +495,15 @@ class BaseEventProcessor:
     def _extract_array(self, df: DataFrame, field_mapping: Any, table_name: str) -> DataFrame:
         """
         Special handler for tables that come from JSON arrays (1 event -> multiple rows)
+        NOW WITH TYPE CONVERSION via safe_batch_extract
         """
 
         print("--------------------------------")
         print("in _extract_array")
 
+        # Get the full schema for this table to apply type conversion
+        full_schema = get_table_schema(table_name)
+        
         # 1. Identify the array path (e.g. reservation.reservationConfirmationNumbers)
         # We take the parent path from the first mapping entry
         first_mapping_path = list(field_mapping.values())[0]
@@ -512,13 +535,42 @@ class BaseEventProcessor:
         df = df.withColumn("exploded_json_list", json_array_to_list(F.col("temp_array_str")))
         df = df.withColumn("single_row_json", F.explode(F.col("exploded_json_list")))
         
-        # 4. Extract fields from the exploded individual JSON objects
-        for col_name, path in field_mapping.items():
-            leaf_key = path.split('.')[-1]
-            df = df.withColumn(col_name, F.get_json_object(F.col("single_row_json"), f"$.{leaf_key}"))
+        # 4. NEW APPROACH: Use safe_batch_extract for type conversion
+        # Create a modified field mapping that uses only the leaf key
+        leaf_field_mapping = {col_name: path.split('.')[-1] for col_name, path in field_mapping.items()}
         
-        df = df.drop("temp_array_str", "exploded_json_list", "single_row_json")
-        return df    
+        # Build UDF schema from the fields we need to extract
+        udf_fields = [field for field in full_schema.fields if field.name in field_mapping]
+        udf_schema = StructType(udf_fields)
+        
+        # Define extract function for array elements (extracts from single object, not nested path)
+        def extract_from_single_object(data, key):
+            """Extract value directly from a single object using the leaf key"""
+            if isinstance(data, dict):
+                return data.get(key)
+            return None
+        
+        # Create UDF that applies safe_batch_extract to each array element
+        @F.udf(returnType=udf_schema)
+        def batch_extract_array_element(json_str):
+            if not json_str:
+                return None
+            try:
+                data = json.loads(json_str) if isinstance(json_str, str) else json_str
+                return safe_batch_extract(data, leaf_field_mapping, udf_schema, extract_from_single_object)
+            except Exception as e:
+                print(f"Error in batch_extract_array_element: {str(e)}")
+                return None
+        
+        # Apply the UDF to extract and convert all fields at once
+        df = df.withColumn("extracted_data", batch_extract_array_element(F.col("single_row_json")))
+        
+        # Extract each field from the struct
+        for field in udf_schema.fields:
+            df = df.withColumn(field.name, F.col(f"extracted_data.{field.name}"))
+        
+        df = df.drop("temp_array_str", "exploded_json_list", "single_row_json", "extracted_data")
+        return df
 
     def generate_record_hash(self, df: DataFrame, business_fields: list, hash_column_name: str = "sha256_hash") -> DataFrame:
         """
