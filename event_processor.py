@@ -822,12 +822,14 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
-            "contactPurpose": contact_purpose_df
+            "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class ReservationCancelProcessor(BaseEventProcessor):
@@ -843,11 +845,13 @@ class ReservationCancelProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class ReservationCheckInProcessor(BaseEventProcessor):
@@ -865,12 +869,14 @@ class ReservationCheckInProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class ReservationCheckOutProcessor(BaseEventProcessor):
@@ -886,12 +892,14 @@ class ReservationCheckOutProcessor(BaseEventProcessor):
         confirmation_number_df = self.reservation_checkout_confirmation_number_processor(event_type, event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class ReservationRoomAssignedProcessor(BaseEventProcessor):
@@ -909,12 +917,14 @@ class ReservationRoomAssignedProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class ReservationRoomChangeProcessor(BaseEventProcessor):
@@ -931,12 +941,14 @@ class ReservationRoomChangeProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
     
 class ReservationECheckInProcessor(BaseEventProcessor):
@@ -972,11 +984,13 @@ class ReservationEmailConfirmationProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class GroupCreateModifyProcessor(BaseEventProcessor):
@@ -992,11 +1006,13 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        contact_df = self.generic_table_processor(event_type, "contact", event_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "contactPurpose": contact_purpose_df,
+            "contact": contact_df,
         }
 
 class GroupCancelProcessor(BaseEventProcessor):
