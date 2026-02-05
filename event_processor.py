@@ -18,6 +18,7 @@ from json_utils import extract_json_value
 from functools import reduce
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, date
+from relationship import get_table_relationships
 
 
 UUID_NAMESPACE = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
@@ -671,6 +672,49 @@ class BaseEventProcessor:
             "succeeded": reduce(lambda d1, d2: d1.unionByName(d2), s_list) if s_list else empty,
             "failed": reduce(lambda d1, d2: d1.unionByName(d2), f_list) if f_list else empty
         }
+    
+    def rate_phase2_processor(self, event_type: str, child_table_name: str, event_df: DataFrame, parent_df: DataFrame, foreign_key: str) -> Dict[str, DataFrame]:
+
+        field_mapping = get_event_table_mappings(event_type, child_table_name)
+        is_array_table = any("[]" in str(path) for path in field_mapping.values())
+        if is_array_table:
+            child_df = self._extract_array(event_df, field_mapping, child_table_name)
+        else:
+            child_df = self._extract_single(event_df, field_mapping, child_table_name)
+        
+        child_df = child_df.withColumn("source_id", F.col("id"))
+        child_df = child_df.withColumn("received_at", F.col("event_timestamp")).filter(F.col("received_at").isNotNull())
+        
+        parent_lookup = parent_df.select(
+            F.col("id").alias("parent_primary_key"), 
+            F.col("source_id").alias("parent_source_id")
+        )
+
+        child_df = child_df.join(
+            parent_lookup, 
+            child_df["source_id"] == parent_lookup["parent_source_id"], 
+            "inner"
+        )
+        child_df = child_df.withColumn(foreign_key, F.col("parent_primary_key")).drop("parent_primary_key", "parent_source_id")
+
+        business_keys = get_business_keys(child_table_name)
+        child_df = self.generate_record_hash(child_df, business_keys)
+        child_df = child_df.withColumn("id", to_uuid_v5(F.col("sha256_hash"))).drop("sha256_hash")
+        child_df = child_df.filter(F.col("id").isNotNull())
+
+        child_df = self.finalize_and_audit(child_df, child_table_name, get_table_schema(child_table_name))
+        return child_df
+    
+    def reservation_group_processor(self, event_type: str, table_name: str, event_df: DataFrame, parent_table_name: str, parent_df: DataFrame) -> Dict[str, DataFrame]:
+
+        # 1. Get the mappings
+        mappings = get_event_table_mappings(event_type, table_name)
+        
+        # 2. Extract DataFrames into a list
+        # Guard: Ensure mappings is a list
+        if not isinstance(mappings, list):
+            mappings = [mappings] if mappings else []
+
 
 def handle_null_values(df: DataFrame) -> DataFrame:
     """
@@ -821,13 +865,17 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+
+        # phase 2 tables
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
         }
@@ -846,12 +894,16 @@ class ReservationCancelProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "company": company_df,
+            "reservedRoom": reserved_room_df,
         }
 
 class ReservationCheckInProcessor(BaseEventProcessor):
@@ -1062,9 +1114,13 @@ class AppliedRateUpdateProcessor(BaseEventProcessor):
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
+
+        #phase 2 tables
+        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
         return {
             "hotel": hotel_df,
+            "rate": rate_df,
         }
 
 class DiscountRateUpdateProcessor(BaseEventProcessor):
@@ -1078,9 +1134,13 @@ class DiscountRateUpdateProcessor(BaseEventProcessor):
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
+
+        #phase 2 tables
+        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
         return {
             "hotel": hotel_df,
+            "rate": rate_df,
         }
 
 class FixedRateUpdateProcessor(BaseEventProcessor):
@@ -1094,9 +1154,13 @@ class FixedRateUpdateProcessor(BaseEventProcessor):
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
+
+        #phase 2 tables
+        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
         return {
             "hotel": hotel_df,
+            "rate": rate_df,
         }
 
 class BestAvailableRateUpdateProcessor(BaseEventProcessor):
@@ -1110,9 +1174,13 @@ class BestAvailableRateUpdateProcessor(BaseEventProcessor):
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
-        
+
+        #phase 2 tables
+        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
+
         return {
             "hotel": hotel_df,
+            "rate": rate_df,
         }
 
 class InventoryBatchProcessor(BaseEventProcessor):

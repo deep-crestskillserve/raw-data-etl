@@ -31,7 +31,7 @@ BUSINESS_KEYS: dict[str, List[str]] = {
     # Reservation-related tables
     "reservationItem": ["startDate", "endDate", "itemType", "quantity", "adultCount", "childCount"],
     "reservedInventory": ["startDate", "endDate", "inventoryCode"],
-    "reservedRate": ["startDate", "endDate", "ratePlanCode", "rateAmount", "onePersonRate", "twoPersonRate", "rateIsAwardEligible", "rateIsConfidential", "rateIsPackage", "packageNetRoomRateAmount", "rateIsCommissionable"],
+    "reservedRate": ["startDate", "endDate", "ratePlanCode", "rateAmount", "rateIsAwardEligible", "rateIsConfidential", "rateIsPackage", "packageNetRoomRateAmount", "rateIsCommissionable"],
     "specialRequest": ["code", "description"],
     
     # Payment and guarantee tables
