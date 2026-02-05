@@ -55,8 +55,15 @@ def main():
                         clean[t] = df.filter(F.col("id").isNotNull())
             return clean
 
-        final_success = get_clean_tables(success_tables)
-        final_failure = get_clean_tables(failure_tables)
+        if(success_tables is not None):
+            final_success = get_clean_tables(success_tables)
+        else:
+            final_success = None
+
+        if(failure_tables is not None):
+            final_failure = get_clean_tables(failure_tables)
+        else:
+            final_failure = None
 
         # 1. Process Succeeded records (S3 + RDS)
         if final_success:

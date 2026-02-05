@@ -148,7 +148,6 @@ class DatabaseConnection:
         
         # FIX: Wrap table name in backticks for MySQL keywords
         escaped_table_name = f"`{table_name}`"
-        
         reader = spark.read \
             .format("jdbc") \
             .option("url", properties["url"]) \

@@ -18,7 +18,7 @@ from json_utils import extract_json_value
 from functools import reduce
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, date
-from relationship import get_table_relationships
+from relationship import get_table_relationships, table_exists_in_schema
 
 
 UUID_NAMESPACE = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
@@ -365,10 +365,18 @@ class BaseEventProcessor:
         print("in finalize_and_audit")
         print(f"table name: {table_name}")
 
+        if(df is None or df.rdd.isEmpty()):
+            print(f"table name: {table_name}")
+            print("Input DF is empty or None, returning empty DFs.")
+            empty_df = self.spark.createDataFrame([], full_schema)
+            return {"succeeded": empty_df, "failed": empty_df}
+        
+        df_size_before = df.count()
+
         # STEP 1: Replace String NULL markers with actual None
         for field in full_schema.fields:
             if isinstance(field.dataType, StringType) and field.name in df.columns:
-                print(f"Replacing NULL markers in column: {field.name}")
+                # print(f"Replacing NULL markers in column: {field.name}")
                 df = df.withColumn(
                     field.name,
                     F.when(
@@ -417,6 +425,8 @@ class BaseEventProcessor:
                 select_expressions.append(F.lit(None).cast(field.dataType).alias(field.name))
 
         final_df = df.select(*select_expressions)
+        print("final_df")
+        # final_df.show(20, truncate=False)
         # print("--------------------------------")
         # if table_name == "reservationStatus":
             # print("final_df")
@@ -425,7 +435,13 @@ class BaseEventProcessor:
         
         # STEP 5: VALIDATION - Split based on nullability
         # This will move records with NULL in non-nullable columns to failed_df
+        df_size_after = final_df.count()
+        print("Finalized DF with correct schema. Before: {}, After: {}".format(df_size_before, df_size_after))
         valid_df, failed_df = self.validate_schema_nullability(final_df, full_schema)
+        
+        valid_df_size = valid_df.count()
+        failed_df_size = failed_df.count()
+        print("DF after validating nullability. Valid DF size: {}, Failed DF size: {}".format(valid_df_size, failed_df_size))
 
         # STEP 6: AUDIT - Only audit valid records
         audited_valid_df = self.audit_processor(table_name, valid_df)
@@ -435,7 +451,7 @@ class BaseEventProcessor:
             "failed": failed_df
         }
     
-    def process_dataframe(self, df: DataFrame, field_mapping: Any, table_name: str) -> Dict[str, DataFrame]:
+    def process_dataframe(self, df: DataFrame, field_mapping: Any, table_name: str, parent_df_list: list[Dict[str, DataFrame]] = None) -> Dict[str, DataFrame]:
         """
         Unified entry point for extracting table data.
         """
@@ -445,7 +461,9 @@ class BaseEventProcessor:
             return {"succeeded": empty_df, "failed": empty_df}
 
         # Handling list of mappings (common in CheckOut events)
-
+        print("--------------------------------")
+        print("in process_dataframe")
+        print("handling list of mappings")
         if isinstance(field_mapping, list):
             merged_mapping = {}
             for m in field_mapping:
@@ -455,13 +473,61 @@ class BaseEventProcessor:
         # Determine if this table contains array-based rows by checking for [] in paths
         # or by checking if the table is known to be an array table
         is_array_table = any("[]" in str(path) for path in field_mapping.values())
-        print("in process_dataframe")
+        print("determining if table is array table")
         print(f"table: {table_name}")
 
+        print("extracting data from table using array or single approach")
         if is_array_table:
             processed_df = self._extract_array(df, field_mapping, table_name)
         else:
             processed_df = self._extract_single(df, field_mapping, table_name)
+        
+        if(processed_df is not None):
+            print("processed_df after extracting data from table using array or single approach")
+            processed_df.show(20, truncate=False)
+        else:
+            print("processed_df after extracting data from table using array or single approach is None")
+            return {"succeeded": None, "failed": None}
+        
+        if(table_exists_in_schema(table_name)):
+            print(f"table {table_name} has parent tables")
+            relationships = get_table_relationships(table_name)
+            for parent_table, relation_info in relationships.items():
+                
+                local_column = relation_info["local_column"]
+                parent_column = relation_info["parent_column"]
+                df_lookup = {k: v for d in parent_df_list for k, v in d.items()}
+                parent_df_dict = df_lookup.get(parent_table, None)
+                parent_df = parent_df_dict.get(table_name, None) if parent_df_dict else None
+                if(parent_df is None):
+                    print(f"parent table {parent_table} not found for table {table_name}")
+                    continue
+                
+                print(f"parent table {parent_table} found for child table {table_name}")
+                parent_lookup = parent_df.select(
+                    F.col(parent_column).alias("parent_primary_key"), 
+                    F.col("source_id").alias("parent_source_id")
+                )
+
+                print("joining parent table to child table on source_id")
+                processed_df = processed_df.join(
+                    parent_lookup,
+                    processed_df["source_id"] == parent_lookup["parent_source_id"],
+                    "inner"
+                )
+                if(processed_df is not None):
+                    print("processed_df is not None")
+                    processed_df.show(20, truncate=False)
+                else:
+                    print("processed_df is None")
+                    return {"succeeded": None, "failed": None}
+                processed_df = processed_df.withColumn(local_column, F.col("parent_primary_key")).drop("parent_primary_key", "parent_source_id")
+        if(processed_df is not None):
+            print("processed_df after joining parent table to child table on source_id")
+            processed_df.show(20, truncate=False)
+        else:
+            print("processed_df after joining parent table to child table on source_id is None")
+            return {"succeeded": None, "failed": None}
         
         return self.finalize_and_audit(processed_df, table_name, get_table_schema(table_name))
 
@@ -615,15 +681,18 @@ class BaseEventProcessor:
     def hotel_processor(self, event_type: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         print("--------------------------------")
         print("in hotel_processor")
-        print(f"event type: {event_type}")
 
+        print("getting hotel field mappings")
         hotel_fields = get_event_table_mappings(event_type, "hotel")
-        print(f"Hotel fields: {hotel_fields}")
+        # print(f"Hotel fields: {hotel_fields}")
         
         # 1. Get hotel dataframe with audited unique records
+        print("processing hotel dataframe")
         extracted_hotel_df = self.process_dataframe(event_df, hotel_fields, table_name="hotel")
+        print("hotel dataframe processed")
         
         # 2. Apply Property Name Abbreviation Logic
+        print("applying property name abbreviation logic")
         def abbreviate_name(df):
             if "propertyName" not in df.columns: return df
             return df.withColumn("propertyName_abbrev", 
@@ -633,19 +702,20 @@ class BaseEventProcessor:
                          F.lit(" "), F.regexp_extract(F.col("propertyName"), r"^[A-Za-z]+ [A-Za-z]+ (.+)", 1))
                 ).otherwise(F.col("propertyName")))
         
+        print("property name abbreviation logic applied")
         return {
             "succeeded": abbreviate_name(extracted_hotel_df["succeeded"]),
             "failed": abbreviate_name(extracted_hotel_df["failed"])
         }
     
-    def generic_table_processor(self, event_type: str, table_name: str, event_df: DataFrame) -> Dict[str, DataFrame]:
+    def generic_table_processor(self, event_type: str, table_name: str, event_df: DataFrame, parent_df: list[Dict[str, DataFrame]] = None) -> Dict[str, DataFrame]:
         print("--------------------------------")
         print("in generic_table_processor")
         print(f"event type: {event_type}")
         print(f"table name: {table_name}")
 
         table_fields = get_event_table_mappings(event_type, table_name)
-        return self.process_dataframe(event_df, table_fields, table_name)
+        return self.process_dataframe(event_df, table_fields, table_name, parent_df)
     
     def reservation_checkout_confirmation_number_processor(self, event_type: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         # 1. Get the mappings
@@ -673,37 +743,37 @@ class BaseEventProcessor:
             "failed": reduce(lambda d1, d2: d1.unionByName(d2), f_list) if f_list else empty
         }
     
-    def rate_phase2_processor(self, event_type: str, child_table_name: str, event_df: DataFrame, parent_df: DataFrame, foreign_key: str) -> Dict[str, DataFrame]:
+    # def rate_phase2_processor(self, event_type: str, child_table_name: str, event_df: DataFrame, parent_df: DataFrame, foreign_key: str) -> Dict[str, DataFrame]:
 
-        field_mapping = get_event_table_mappings(event_type, child_table_name)
-        is_array_table = any("[]" in str(path) for path in field_mapping.values())
-        if is_array_table:
-            child_df = self._extract_array(event_df, field_mapping, child_table_name)
-        else:
-            child_df = self._extract_single(event_df, field_mapping, child_table_name)
+    #     field_mapping = get_event_table_mappings(event_type, child_table_name)
+    #     is_array_table = any("[]" in str(path) for path in field_mapping.values())
+    #     if is_array_table:
+    #         child_df = self._extract_array(event_df, field_mapping, child_table_name)
+    #     else:
+    #         child_df = self._extract_single(event_df, field_mapping, child_table_name)
         
-        child_df = child_df.withColumn("source_id", F.col("id"))
-        child_df = child_df.withColumn("received_at", F.col("event_timestamp")).filter(F.col("received_at").isNotNull())
+    #     child_df = child_df.withColumn("source_id", F.col("id"))
+    #     child_df = child_df.withColumn("received_at", F.col("event_timestamp")).filter(F.col("received_at").isNotNull())
         
-        parent_lookup = parent_df.select(
-            F.col("id").alias("parent_primary_key"), 
-            F.col("source_id").alias("parent_source_id")
-        )
+    #     parent_lookup = parent_df.select(
+    #         F.col("id").alias("parent_primary_key"), 
+    #         F.col("source_id").alias("parent_source_id")
+    #     )
 
-        child_df = child_df.join(
-            parent_lookup, 
-            child_df["source_id"] == parent_lookup["parent_source_id"], 
-            "inner"
-        )
-        child_df = child_df.withColumn(foreign_key, F.col("parent_primary_key")).drop("parent_primary_key", "parent_source_id")
+    #     child_df = child_df.join(
+    #         parent_lookup, 
+    #         child_df["source_id"] == parent_lookup["parent_source_id"], 
+    #         "inner"
+    #     )
+    #     child_df = child_df.withColumn(foreign_key, F.col("parent_primary_key")).drop("parent_primary_key", "parent_source_id")
 
-        business_keys = get_business_keys(child_table_name)
-        child_df = self.generate_record_hash(child_df, business_keys)
-        child_df = child_df.withColumn("id", to_uuid_v5(F.col("sha256_hash"))).drop("sha256_hash")
-        child_df = child_df.filter(F.col("id").isNotNull())
+    #     business_keys = get_business_keys(child_table_name)
+    #     child_df = self.generate_record_hash(child_df, business_keys)
+    #     child_df = child_df.withColumn("id", to_uuid_v5(F.col("sha256_hash"))).drop("sha256_hash")
+    #     child_df = child_df.filter(F.col("id").isNotNull())
 
-        child_df = self.finalize_and_audit(child_df, child_table_name, get_table_schema(child_table_name))
-        return child_df
+    #     child_df = self.finalize_and_audit(child_df, child_table_name, get_table_schema(child_table_name))
+    #     return child_df
     
     def reservation_group_processor(self, event_type: str, table_name: str, event_df: DataFrame, parent_table_name: str, parent_df: DataFrame) -> Dict[str, DataFrame]:
 
@@ -783,6 +853,7 @@ def process_events_by_type(spark: SparkSession, processed_df: DataFrame, audit_d
         processor_instance = processor_class(spark, safe_audit_dfs)
 
         # Process with corresponding processor
+        print(f"Processing event type: {event_type}")
         result_dict = processor_instance.process(event_df)
         
         # Collect the processed dataframe, perform left anti join with the existing processed dataframe to get unique records
@@ -859,7 +930,6 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         event_type = "reservationCreate"
         print("--------------------------------")
         print("in ReservationCreateModifyProcessor")
-        print(f"event type: {event_type}")
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
@@ -868,8 +938,30 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        travel_agent_df = self.generic_table_processor(event_type, "travelAgent", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
 
+        if(hotel_df is not None):
+            print("hotel_df in reservation create modify processor")
+            hotel_success_df = hotel_df["succeeded"]
+            if(hotel_success_df is not None):
+                print("hotel_success_df in reservation create modify processor")
+                hotel_success_df.show(20, truncate=False)
+        if(travel_agent_df is not None):
+            print("travel_agent_df in reservation create modify processor")
+            travel_agent_success_df = travel_agent_df["succeeded"]
+            if(travel_agent_success_df is not None):
+                print("travel_agent_success_df in reservation create modify processor")
+                travel_agent_success_df.show(20, truncate=False)
+        if(company_df is not None):
+            print("company_df in reservation create modify processor")
+            company_success_df = company_df["succeeded"]
+            if(company_success_df is not None):
+                print("company_success_df in reservation create modify processor")
+                company_success_df.show(20, truncate=False)
         # phase 2 tables
+        group_parent_df = [{"hotel": hotel_success_df}, {"travelAgent": travel_agent_success_df}, {"company": company_success_df}]
+        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
@@ -878,6 +970,9 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
             "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "travelAgent": travel_agent_df,
+            "company": company_df,
+            "group": group_df,
         }
 
 class ReservationCancelProcessor(BaseEventProcessor):
@@ -896,7 +991,8 @@ class ReservationCancelProcessor(BaseEventProcessor):
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
         company_df = self.generic_table_processor(event_type, "company", event_df)
         reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
-        
+
+        # phase 2 tables
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
@@ -939,19 +1035,40 @@ class ReservationCheckOutProcessor(BaseEventProcessor):
         print("--------------------------------")
         print("in ReservationCheckOutProcessor")
         print(f"event type: {event_type}")
+        
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.reservation_checkout_confirmation_number_processor(event_type, event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
+
+        if(hotel_df is not None):
+            print("hotel_df in reservation check out processor")
+            hotel_success_df = hotel_df["succeeded"]
+            if(hotel_success_df is not None):
+                print("hotel_success_df in reservation check out processor")
+                hotel_success_df.show(20, truncate=False)
+        if(company_df is not None):
+            print("company_df in reservation check out processor")
+            company_success_df = company_df["succeeded"]
+            if(company_success_df is not None):
+                print("company_success_df in reservation check out processor")
+                company_success_df.show(20, truncate=False)
+
+        # phase 2 tables
+        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
             "contactPurpose": contact_purpose_df,
-            "contact": contact_df,
+            "contact": contact_df,  
+            "company": company_df,
+            "group": group_df,
         }
 
 class ReservationRoomAssignedProcessor(BaseEventProcessor):
@@ -1059,12 +1176,39 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
+        travel_agent_df = self.generic_table_processor(event_type, "travelAgent", event_df)
+
+        # phase 2 tables
+        if(hotel_df is not None):
+            print("hotel_df in group create modify processor")
+            hotel_success_df = hotel_df["succeeded"]
+            if(hotel_success_df is not None):
+                print("hotel_success_df in group create modify processor")
+                hotel_success_df.show(20, truncate=False)
+        if(company_df is not None):
+            print("company_df in group create modify processor")
+            company_success_df = company_df["succeeded"]
+            if(company_success_df is not None):
+                print("company_success_df in group create modify processor")
+                company_success_df.show(20, truncate=False)
+        if(travel_agent_df is not None):
+            print("travel_agent_df in group create modify processor")
+            travel_agent_success_df = travel_agent_df["succeeded"]
+            if(travel_agent_success_df is not None):
+                print("travel_agent_success_df in group create modify processor")
+                travel_agent_success_df.show(20, truncate=False)
+        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}, {"travelAgent": travel_agent_success_df}]
+        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "company": company_df,
+            "travelAgent": travel_agent_df,
+            "group": group_df,
         }
 
 class GroupCancelProcessor(BaseEventProcessor):
@@ -1079,10 +1223,30 @@ class GroupCancelProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
+
+        if(hotel_df is not None):
+            print("hotel_df in group cancel processor")
+            hotel_success_df = hotel_df["succeeded"]
+            if(hotel_success_df is not None):
+                print("hotel_success_df in group cancel processor")
+                hotel_success_df.show(20, truncate=False)
+        if(company_df is not None):
+            print("company_df in group cancel processor")
+            company_success_df = company_df["succeeded"]
+            if(company_success_df is not None):
+                print("company_success_df in group cancel processor")
+                company_success_df.show(20, truncate=False)
+
+        # phase 2 tables
+        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "company": company_df,
+            "group": group_df,
         }
 
 class GroupCheckOutProcessor(BaseEventProcessor):
@@ -1097,10 +1261,30 @@ class GroupCheckOutProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
+
+        if(hotel_df is not None):
+            print("hotel_df in group check out processor")
+            hotel_success_df = hotel_df["succeeded"]
+            if(hotel_success_df is not None):
+                print("hotel_success_df in group check out processor")
+                hotel_success_df.show(20, truncate=False)
+        if(company_df is not None):
+            print("company_df in group check out processor")
+            company_success_df = company_df["succeeded"]
+            if(company_success_df is not None):
+                print("company_success_df in group check out processor")
+                company_success_df.show(20, truncate=False)
+
+        # phase 2 tables
+        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "company": company_df,
+            "group": group_df,
         }
 
 class AppliedRateUpdateProcessor(BaseEventProcessor):
@@ -1116,11 +1300,10 @@ class AppliedRateUpdateProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
 
         #phase 2 tables
-        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
+        # rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
         return {
             "hotel": hotel_df,
-            "rate": rate_df,
         }
 
 class DiscountRateUpdateProcessor(BaseEventProcessor):
@@ -1136,11 +1319,10 @@ class DiscountRateUpdateProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
 
         #phase 2 tables
-        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
+        # rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
         return {
             "hotel": hotel_df,
-            "rate": rate_df,
         }
 
 class FixedRateUpdateProcessor(BaseEventProcessor):
@@ -1156,11 +1338,11 @@ class FixedRateUpdateProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
 
         #phase 2 tables
-        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
+        # rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
         return {
             "hotel": hotel_df,
-            "rate": rate_df,
+            # "rate": rate_df,
         }
 
 class BestAvailableRateUpdateProcessor(BaseEventProcessor):
@@ -1176,11 +1358,11 @@ class BestAvailableRateUpdateProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
 
         #phase 2 tables
-        rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
+        # rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
 
         return {
             "hotel": hotel_df,
-            "rate": rate_df,
+            # "rate": rate_df,
         }
 
 class InventoryBatchProcessor(BaseEventProcessor):
