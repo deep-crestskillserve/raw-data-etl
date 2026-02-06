@@ -20,7 +20,7 @@ BUSINESS_KEYS: dict[str, List[str]] = {
     "travelAgent": ["agentIataId", "name"],
     "company": ["companyId", "corporateId", "name"],
     "group": ["groupId", "hotel_id", "name", "eventInfo_name", "groupInfo_groupLastUpdateTimestamp", "groupInfo_isGroupBlockAutoDrop", "groupInfo_isRateAwardEligible", "groupInfo_isGroupWithCompany", "groupInfo_isElastic", "groupContact_lastName", "groupContact_firstName", "cancelReason"],
-    "reservation": ["reservationId", "hotels_id", "eventInfo_name", "arrivalDate", "departureDate", "reservationLastUpdateTimestamp", "reservedRoom", "associations_company_id", "checkOut_group_id", "associations_travelAgent_id", "associations_groups_id" "costSummary_averageNightlyReservedRateAmountBeforeTax", "costSummary_totalTaxAmount", "costSummary_totalOtherRevenueAmountBeforeTax"],
+    "reservation": ["reservationId", "hotels_id", "eventInfo_name", "arrivalDate", "departureDate", "reservationLastUpdateTimestamp", "reservedRoom", "associations_company_id", "checkOut_group_id", "associations_travelAgent_id", "associations_groups_id", "costSummary_averageNightlyReservedRateAmountBeforeTax", "costSummary_totalTaxAmount", "costSummary_totalOtherRevenueAmountBeforeTax"],
     "confirmationNumber": ["confirmationNumber", "source"],
     "reservationStatus": ["statusTimestamp", "reservationStatus", "confirmationId"],
     "loyaltyRewardsMembership": ["loyaltyNumber", "loyaltyType", "loyaltyLevel"],

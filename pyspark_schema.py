@@ -168,6 +168,7 @@ SCHEMAS = {
     ]),
     
     "reservationConfirmationNumberLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("confirmation_number_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -175,6 +176,7 @@ SCHEMAS = {
     ]),
     
     "groupConfirmationNumberLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("confirmation_number_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -196,6 +198,7 @@ SCHEMAS = {
     
     "reservationStatusLink": StructType([
         StructField("id", StringType(), nullable=False),
+        StructField("reservation_id", StringType(), nullable=False),
         StructField("status_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
         StructField("source_id", LongType(), nullable=False),
@@ -228,6 +231,7 @@ SCHEMAS = {
     ]),
     
     "customerLoyaltyRewardsMembershipLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("customer_id", StringType(), nullable=False),
         StructField("loyalty_rewards_membership_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -263,6 +267,7 @@ SCHEMAS = {
     ]),
     
     "contactContactPurposeLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("contact_id", StringType(), nullable=False),
         StructField("contact_purpose_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -270,6 +275,7 @@ SCHEMAS = {
     ]),
     
     "customerContactLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("customer_id", StringType(), nullable=False),
         StructField("contact_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -277,6 +283,7 @@ SCHEMAS = {
     ]),
     
     "groupContactLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("contact_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -285,12 +292,14 @@ SCHEMAS = {
     
     "reservationCustomerLink": StructType([
         StructField("id", StringType(), nullable=False),
+        StructField("reservation_id", StringType(), nullable=False),
         StructField("customer_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
         StructField("source_id", LongType(), nullable=False),
     ]),
     
     "reservationEmailAddressLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("email_address_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -323,6 +332,7 @@ SCHEMAS = {
     ]),
     
     "reservationItemReservedInventoryLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_item_id", StringType(), nullable=False),
         StructField("reserved_inventory_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -348,6 +358,7 @@ SCHEMAS = {
     ]),
     
     "reservationItemReservedRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_item_id", StringType(), nullable=False),
         StructField("reserved_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -355,6 +366,7 @@ SCHEMAS = {
     ]),
     
     "reservationItemReservedRoomLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_item_id", StringType(), nullable=False),
         StructField("reserved_room_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -373,6 +385,7 @@ SCHEMAS = {
     ]),
     
     "reservationItemSpecialRequestLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_item_id", StringType(), nullable=False),
         StructField("special_request_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -380,6 +393,7 @@ SCHEMAS = {
     ]),
     
     "reservationItemLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("reservation_item_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -407,6 +421,7 @@ SCHEMAS = {
     ]),
     
     "guaranteeCreditCardLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("guarantee_id", StringType(), nullable=False),
         StructField("credit_card_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -414,6 +429,7 @@ SCHEMAS = {
     ]),
     
     "reservationGuaranteeLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("guarantee_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -430,6 +446,7 @@ SCHEMAS = {
     ]),
     
     "paymentMethodCreditCardLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("payment_method_id", StringType(), nullable=False),
         StructField("credit_card_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -437,6 +454,7 @@ SCHEMAS = {
     ]),
     
     "reservationPaymentMethodLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("payment_method_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -452,6 +470,7 @@ SCHEMAS = {
     ]),
     
     "reservationLinkedReservationLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("linked_reservation_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -467,6 +486,7 @@ SCHEMAS = {
     ]),
     
     "reservationFolioSummaryLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("folio_summary_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -474,6 +494,7 @@ SCHEMAS = {
     ]),
     
     "groupFolioSummaryLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("folio_summary_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -494,6 +515,7 @@ SCHEMAS = {
     ]),
     
     "groupAccountStatusLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("account_status_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -511,6 +533,7 @@ SCHEMAS = {
     ]),
     
     "groupGroupBlockLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("group_block_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -530,6 +553,7 @@ SCHEMAS = {
     ]),
     
     "groupGroupRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("group_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -537,6 +561,7 @@ SCHEMAS = {
     ]),
     
     "groupPlannerCreditCardLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("credit_card_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -544,6 +569,7 @@ SCHEMAS = {
     ]),
     
     "groupGuestCreditCardLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("credit_card_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -551,6 +577,7 @@ SCHEMAS = {
     ]),
     
     "groupPaymentMethodLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("payment_method_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -558,6 +585,7 @@ SCHEMAS = {
     ]),
     
     "groupLoyaltyRewardsMembershipLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("loyalty_rewards_membership_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -585,6 +613,7 @@ SCHEMAS = {
     ]),
     
     "rateRatePlanCodeLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("rate_plan_code_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -617,6 +646,7 @@ SCHEMAS = {
     ]),
     
     "rateAmountOffRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("amount_off_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -649,6 +679,7 @@ SCHEMAS = {
     ]),
     
     "ratePercentOffRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("percent_off_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -681,6 +712,7 @@ SCHEMAS = {
     ]),
     
     "rateAmountAboveRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("amount_above_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -713,6 +745,7 @@ SCHEMAS = {
     ]),
     
     "ratePercentAboveRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("percent_above_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -740,6 +773,7 @@ SCHEMAS = {
     ]),
     
     "rateAmountFixedRateLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("amount_fixed_rate_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -758,6 +792,7 @@ SCHEMAS = {
     ]),
     
     "rateExtraChargeLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("rate_id", StringType(), nullable=False),
         StructField("extra_charge_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -775,7 +810,7 @@ SCHEMAS = {
         StructField("outOfOrderCount", IntegerType(), nullable=False),
         StructField("physicalCount", IntegerType(), nullable=False),
         StructField("soldCount", IntegerType(), nullable=False),
-        StructField("groupBlockCount", IntegerType(), nullable=False),
+        StructField("groupBlockCount", IntegerType(), nullable=True),
         StructField("groupPickUpCount", IntegerType(), nullable=False),
         StructField("overbookingLimit", IntegerType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -834,6 +869,7 @@ SCHEMAS = {
     ]),
     
     "housekeepingStatusConfirmationNumberLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("house_keeping_status_id", StringType(), nullable=False),
         StructField("confirmation_number_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -861,6 +897,7 @@ SCHEMAS = {
     ]),
     
     "groupFolioItemLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("group_id", StringType(), nullable=False),
         StructField("folio_item_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),
@@ -877,6 +914,7 @@ SCHEMAS = {
     ]),
     
     "reservationCleaningScheduleLink": StructType([
+        StructField("id", StringType(), nullable=False),
         StructField("reservation_id", StringType(), nullable=False),
         StructField("cleaning_schedule_id", StringType(), nullable=False),
         StructField("received_at", TimestampType(), nullable=False),

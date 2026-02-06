@@ -386,11 +386,11 @@ class BaseEventProcessor:
                 )
 
         # STEP 2: Map Metadata
-        df = df.withColumn("source_id", F.col("id"))
+        if "source_id" not in df.columns:
+            df = df.withColumn("source_id", F.col("id"))
         
         # If table is reservationStatus, use statusTimestamp as received_at
         if table_name == "reservationStatus":
-            # df.show(20, truncate=False)
             timestamp_col = "statusTimestamp"
         else:
             timestamp_col = "event_timestamp"
@@ -426,12 +426,6 @@ class BaseEventProcessor:
 
         final_df = df.select(*select_expressions)
         print("final_df")
-        # final_df.show(20, truncate=False)
-        # print("--------------------------------")
-        # if table_name == "reservationStatus":
-            # print("final_df")
-            # final_df.show(20, truncate=False)
-        # print("--------------------------------")
         
         # STEP 5: VALIDATION - Split based on nullability
         # This will move records with NULL in non-nullable columns to failed_df
@@ -448,7 +442,8 @@ class BaseEventProcessor:
 
         return {
             "succeeded": audited_valid_df,
-            "failed": failed_df
+            "failed": failed_df,
+            "lookup": valid_df
         }
     
     def process_dataframe(self, df: DataFrame, field_mapping: Any, table_name: str, parent_df_list: list[Dict[str, DataFrame]] = None) -> Dict[str, DataFrame]:
@@ -484,50 +479,48 @@ class BaseEventProcessor:
         
         if(processed_df is not None):
             print("processed_df after extracting data from table using array or single approach")
-            processed_df.show(20, truncate=False)
         else:
             print("processed_df after extracting data from table using array or single approach is None")
             return {"succeeded": None, "failed": None}
+        
+        processed_df = processed_df.withColumn("source_id", F.col("id"))
         
         if(table_exists_in_schema(table_name)):
             print(f"table {table_name} has parent tables")
             relationships = get_table_relationships(table_name)
             for parent_table, relation_info in relationships.items():
                 
+                print(f"pranet table: {parent_table}")
                 local_column = relation_info["local_column"]
+                print(f"child table field: {local_column}")
                 parent_column = relation_info["parent_column"]
-                df_lookup = {k: v for d in parent_df_list for k, v in d.items()}
-                parent_df_dict = df_lookup.get(parent_table, None)
-                parent_df = parent_df_dict.get(table_name, None) if parent_df_dict else None
+                print(f"parent table field: {parent_column}")
+
+                parent_df = None
+                for d in parent_df_list:
+                    if parent_table in d:
+                        parent_df = d[parent_table]
+                        break
+
                 if(parent_df is None):
                     print(f"parent table {parent_table} not found for table {table_name}")
                     continue
                 
-                print(f"parent table {parent_table} found for child table {table_name}")
-                parent_lookup = parent_df.select(
-                    F.col(parent_column).alias("parent_primary_key"), 
-                    F.col("source_id").alias("parent_source_id")
-                )
+                print("parent_df dataframe")
+                parent_df.show(20, truncate=False)
 
-                print("joining parent table to child table on source_id")
+                parent_lookup = parent_df.select(
+                    F.col(parent_column).alias("parent_pk_val"), 
+                    F.col("source_id").alias("p_source_id")
+                )
+                print("parent_lookup dataframe")
+                parent_lookup.show(20, truncate=False)
+
                 processed_df = processed_df.join(
                     parent_lookup,
-                    processed_df["source_id"] == parent_lookup["parent_source_id"],
-                    "inner"
-                )
-                if(processed_df is not None):
-                    print("processed_df is not None")
-                    processed_df.show(20, truncate=False)
-                else:
-                    print("processed_df is None")
-                    return {"succeeded": None, "failed": None}
-                processed_df = processed_df.withColumn(local_column, F.col("parent_primary_key")).drop("parent_primary_key", "parent_source_id")
-        if(processed_df is not None):
-            print("processed_df after joining parent table to child table on source_id")
-            processed_df.show(20, truncate=False)
-        else:
-            print("processed_df after joining parent table to child table on source_id is None")
-            return {"succeeded": None, "failed": None}
+                    processed_df["source_id"] == parent_lookup["p_source_id"],
+                    "left"
+                ).withColumn(local_column, F.col("parent_pk_val")).drop("parent_pk_val", "p_source_id")
         
         return self.finalize_and_audit(processed_df, table_name, get_table_schema(table_name))
 
@@ -612,7 +605,7 @@ class BaseEventProcessor:
 
         # Explode the list of structs into multiple rows
         df = df.withColumn("extracted_array", array_batch_udf(F.col("raw")))
-        df = df.withColumn("exploded_row", F.explode(F.col("extracted_array")))
+        df = df.withColumn("exploded_row", F.explode_outer(F.col("extracted_array")))
         
         # Flatten the struct columns
         for field in udf_schema.fields:
@@ -705,7 +698,8 @@ class BaseEventProcessor:
         print("property name abbreviation logic applied")
         return {
             "succeeded": abbreviate_name(extracted_hotel_df["succeeded"]),
-            "failed": abbreviate_name(extracted_hotel_df["failed"])
+            "failed": extracted_hotel_df["failed"],
+            "lookup": extracted_hotel_df["lookup"]
         }
     
     def generic_table_processor(self, event_type: str, table_name: str, event_df: DataFrame, parent_df: list[Dict[str, DataFrame]] = None) -> Dict[str, DataFrame]:
@@ -728,11 +722,14 @@ class BaseEventProcessor:
 
         s_list = []
         f_list = []
+        l_list = []
         for mapping in mappings:
             if mapping: # Guard against None entries in list
                 res = self.process_dataframe(event_df, mapping, table_name="confirmationNumber")
                 s_list.append(res["succeeded"])
                 f_list.append(res["failed"])
+                l_list.append(res["lookup"])
+
 
 
         # 3. Handle empty list case (to avoid errors)
@@ -740,40 +737,111 @@ class BaseEventProcessor:
 
         return {
             "succeeded": reduce(lambda d1, d2: d1.unionByName(d2), s_list) if s_list else empty,
-            "failed": reduce(lambda d1, d2: d1.unionByName(d2), f_list) if f_list else empty
+            "failed": reduce(lambda d1, d2: d1.unionByName(d2), f_list) if f_list else empty,
+            "lookup": reduce(lambda d1, d2: d1.unionByName(d2), l_list) if l_list else empty,
         }
     
-    # def rate_phase2_processor(self, event_type: str, child_table_name: str, event_df: DataFrame, parent_df: DataFrame, foreign_key: str) -> Dict[str, DataFrame]:
-
-    #     field_mapping = get_event_table_mappings(event_type, child_table_name)
-    #     is_array_table = any("[]" in str(path) for path in field_mapping.values())
-    #     if is_array_table:
-    #         child_df = self._extract_array(event_df, field_mapping, child_table_name)
-    #     else:
-    #         child_df = self._extract_single(event_df, field_mapping, child_table_name)
+    def link_table_processor(
+        self, 
+        final_table_name: str,
+        table_1: str,
+        df_1: DataFrame,
+        table_2: str,
+        df_2: DataFrame,
+    ) -> Dict[str, DataFrame]:
+        """
+        Links two dataframes based on source_id and creates a mapping between their ID columns.
         
-    #     child_df = child_df.withColumn("source_id", F.col("id"))
-    #     child_df = child_df.withColumn("received_at", F.col("event_timestamp")).filter(F.col("received_at").isNotNull())
+        Args:
+            final_table_name: Name of the final table to link the two tables
+            table_1: Name of the first table to link
+            df_1: First dataframe to link with source_id and table_1_id
+            table_2: Name of the second table to link
+            df_2: Second dataframe to link with source_id and table_2_id
         
-    #     parent_lookup = parent_df.select(
-    #         F.col("id").alias("parent_primary_key"), 
-    #         F.col("source_id").alias("parent_source_id")
-    #     )
+        Returns:
+            DataFrame with the linked tables with source_id, table_1_id, and table_2_id
+        """
 
-    #     child_df = child_df.join(
-    #         parent_lookup, 
-    #         child_df["source_id"] == parent_lookup["parent_source_id"], 
-    #         "inner"
-    #     )
-    #     child_df = child_df.withColumn(foreign_key, F.col("parent_primary_key")).drop("parent_primary_key", "parent_source_id")
+        print("--------------------------------")
+        print(f"processing link table {final_table_name} with tables {table_1} and {table_2}")
 
-    #     business_keys = get_business_keys(child_table_name)
-    #     child_df = self.generate_record_hash(child_df, business_keys)
-    #     child_df = child_df.withColumn("id", to_uuid_v5(F.col("sha256_hash"))).drop("sha256_hash")
-    #     child_df = child_df.filter(F.col("id").isNotNull())
+        if(df_1 is None or df_2 is None):
+            print(f"Warning: df_1 or df_2 is None for table {final_table_name} in link_table_processor.")
+            return None
+        
+        relationship_info = get_table_relationships(final_table_name)
+        
+        table_1_info = relationship_info.get(table_1)
+        print(f"table_1_info: {table_1_info}")
+        final_df_1_id = table_1_info.get("local_column")
+        table_1_id = table_1_info.get("parent_column")
+        
+        table_2_info = relationship_info.get(table_2)
+        print(f"table_2_info: {table_2_info}")
+        final_df_2_id = table_2_info.get("local_column")
+        table_2_id = table_2_info.get("parent_column")
 
-    #     child_df = self.finalize_and_audit(child_df, child_table_name, get_table_schema(child_table_name))
-    #     return child_df
+        # Select only source_id and the ID column from each dataframe
+        print("selecting source_id, table_1_id from df_1")
+
+        print(f"{table_1_id}, {table_2_id}")
+
+        d1 = df_1.select(F.col("source_id").alias("s_id_1"), F.col(table_1_id).alias(final_df_1_id))
+        d2 = df_2.select(F.col("source_id").alias("s_id_2"), F.col("received_at"), F.col(table_2_id).alias(final_df_2_id))
+
+        d1.show(20, truncate=False)
+        d2.show(20, truncate=False)
+
+        linked_df = d1.join(
+            d2,
+            d1["s_id_1"] == d2["s_id_2"],
+            how="inner"
+        )
+        # df_1_subset = df_1[['source_id', table_1_id]]
+        # df_1_subset.show(20, truncate=False)
+        # print("selecting source_id, table_2_id, received_at from df_2")
+        # df_2_subset = df_2[['source_id', table_2_id, 'received_at']]
+        # df_2_subset.show(20, truncate=False)
+        # # Perform inner join on source_id to link matching records
+        # print("performing inner join on source_id to link records originating from the same payload")
+        # result_df = df_1_subset.merge(
+        #     df_2_subset, 
+        #     on='source_id', 
+        #     how='inner'
+        # )
+        # result_df.show(20, truncate=False)
+        # # Select only the ID columns and rename them
+        # print("renaming table_1_id and table_2_id to final_df_1_id and final_df_2_id and selecting source_id, received_at")
+        # final_df = result_df[[table_1_id, table_2_id, 'received_at', 'source_id']].rename(
+        #     columns={
+        #         table_1_id: final_df_1_id,
+        #         table_2_id: final_df_2_id
+        #     }
+        # )
+        # print("final_df")
+        # final_df.show(20, truncate=False)
+        # print("--------------------------------")
+        # return final_df
+        linked_df = linked_df.select(
+            F.col("s_id_1").alias("source_id"),
+            F.col("received_at"),
+            F.col(final_df_1_id),
+            F.col(final_df_2_id)
+        )
+
+        linked_df = self.generate_record_hash(
+            linked_df, 
+            business_fields=[final_df_1_id, final_df_2_id], 
+            hash_column_name="link_hash"
+        )
+        linked_df = linked_df.withColumn("id", to_uuid_v5(F.col("link_hash")))
+        linked_df = linked_df.drop("link_hash")
+
+        return {
+            "succeeded": linked_df,
+            "failed": None
+        }
     
     def reservation_group_processor(self, event_type: str, table_name: str, event_df: DataFrame, parent_table_name: str, parent_df: DataFrame) -> Dict[str, DataFrame]:
 
@@ -889,37 +957,56 @@ def process_events_by_type(spark: SparkSession, processed_df: DataFrame, audit_d
         # Sort by received_at descending so the newest record is on top, then drop duplicates
         # Only process if we actually have rows
         # Filter out null IDs and received_at BEFORE attempting count
-        safe_df = table_df.filter(
-            (F.col("id").isNotNull()) & 
-            (F.col("received_at").isNotNull())
-        )
+
+        cols = table_df.columns
+        has_id = "id" in cols
+        has_received_at = "received_at" in cols
+
+        conditions = []
+        if has_id:
+            conditions.append(F.col("id").isNotNull())
+        if has_received_at:
+            conditions.append(F.col("received_at").isNotNull())
+
+        safe_df = table_df
+
+        if conditions:
+            # Combine conditions with AND
+            combined_cond = reduce(lambda a, b: a & b, conditions)
+            safe_df = table_df.filter(combined_cond)
         
-        # Use try-except to handle any remaining NPE issues gracefully
         try:
-            if safe_df.limit(1).count() > 0: 
-                final_success[table_name] = safe_df.orderBy(F.col("received_at").desc()).dropDuplicates(["id"])
+            # Only perform deduplication if both columns are present
+            if has_id and has_received_at:
+                if safe_df.limit(1).count() > 0: 
+                    final_success[table_name] = safe_df.orderBy(F.col("received_at").desc()).dropDuplicates(["id"])
+            elif has_received_at:
+                # If no ID, just sort by latest for visibility
+                if safe_df.limit(1).count() > 0:
+                    final_success[table_name] = safe_df.orderBy(F.col("received_at").desc())
+            else:
+                final_success[table_name] = safe_df
         except Exception as e:
             print(f"WARNING: Error processing {table_name} in success_accumulator: {e}")
-            # Skip this table if count fails
             continue
+
+        # Use try-except to handle any remaining NPE issues gracefully
     
     final_failed = {}
     for table_name, table_df in failed_accumulator.items():
         # Sort by received_at descending so the newest record is on top, then drop duplicates
         # Filter out null IDs and received_at BEFORE attempting count
-        safe_df = table_df.filter(
-            (F.col("id").isNotNull()) & 
-            (F.col("received_at").isNotNull())
-        )
-        
-        # Use try-except to handle any remaining NPE issues gracefully
-        try:
+        cols = table_df.columns
+        has_id = "id" in cols
+        has_ts = "received_at" in cols
+
+        safe_df = table_df
+        if has_id and has_ts:
             if safe_df.limit(1).count() > 0:
+                safe_df = table_df.filter(F.col("id").isNotNull() & F.col("received_at").isNotNull())
                 final_failed[table_name] = safe_df.orderBy(F.col("received_at").desc()).dropDuplicates(["id"])
-        except Exception as e:
-            print(f"WARNING: Error processing {table_name} in failed_accumulator: {e}")
-            # Skip this table if count fails
-            continue
+        else:
+            final_failed[table_name] = table_df
 
     return final_success, final_failed
 
@@ -938,30 +1025,36 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
         customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        loyalty_reward_membership_df = self.generic_table_processor(event_type, "loyaltyRewardsMembership", event_df)
+        reservation_item_df = self.generic_table_processor(event_type, "reservationItem", event_df)
+        reserved_inventory_df = self.generic_table_processor(event_type, "reservedInventory", event_df)
+        reserved_rate_df = self.generic_table_processor(event_type, "reservedRate", event_df)
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
+        special_request_df = self.generic_table_processor(event_type, "specialRequest", event_df)
+        guarantee_df = self.generic_table_processor(event_type, "guarantee", event_df)
+        credit_card_df = self.generic_table_processor(event_type, "creditCard", event_df)
+        payment_method_df = self.generic_table_processor(event_type, "paymentMethod", event_df)
         travel_agent_df = self.generic_table_processor(event_type, "travelAgent", event_df)
         company_df = self.generic_table_processor(event_type, "company", event_df)
+        linked_reservation_df = self.generic_table_processor(event_type, "linkedReservation", event_df)
 
-        if(hotel_df is not None):
-            print("hotel_df in reservation create modify processor")
-            hotel_success_df = hotel_df["succeeded"]
-            if(hotel_success_df is not None):
-                print("hotel_success_df in reservation create modify processor")
-                hotel_success_df.show(20, truncate=False)
-        if(travel_agent_df is not None):
-            print("travel_agent_df in reservation create modify processor")
-            travel_agent_success_df = travel_agent_df["succeeded"]
-            if(travel_agent_success_df is not None):
-                print("travel_agent_success_df in reservation create modify processor")
-                travel_agent_success_df.show(20, truncate=False)
-        if(company_df is not None):
-            print("company_df in reservation create modify processor")
-            company_success_df = company_df["succeeded"]
-            if(company_success_df is not None):
-                print("company_success_df in reservation create modify processor")
-                company_success_df.show(20, truncate=False)
-        # phase 2 tables
-        group_parent_df = [{"hotel": hotel_success_df}, {"travelAgent": travel_agent_success_df}, {"company": company_success_df}]
-        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}, {"travelAgent": travel_agent_df["lookup"]}, {"company": company_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_loyalty_rewards_membership_link_df = self.link_table_processor("customerLoyaltyRewardsMembershipLink", "customer", customer_df["lookup"], "loyaltyRewardsMembership", loyalty_reward_membership_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
+        reservation_item_link_df = self.link_table_processor("reservationItemLink", "reservation", reservation_df["lookup"], "reservationItem", reservation_item_df["lookup"])
+        reservation_item_reserved_inventory_link_df = self.link_table_processor("reservationItemReservedInventoryLink", "reservationItem", reservation_item_df["lookup"], "reservedInventory", reserved_inventory_df["lookup"])
+        reservation_item_reserved_rate_link_df = self.link_table_processor("reservationItemReservedRateLink", "reservationItem", reservation_item_df["lookup"], "reservedRate", reserved_rate_df["lookup"])
+        reservation_item_special_request_link_df = self.link_table_processor("reservationItemSpecialRequestLink", "reservationItem", reservation_item_df["lookup"], "specialRequest", special_request_df["lookup"])
+        reservation_guarantee_link_df = self.link_table_processor("reservationGuaranteeLink", "reservation", reservation_df["lookup"], "guarantee", guarantee_df["lookup"])
+        reservation_payment_method_link_df = self.link_table_processor("reservationPaymentMethodLink", "reservation", reservation_df["lookup"], "paymentMethod", payment_method_df["lookup"])
+        payment_method_credit_card_link_df = self.link_table_processor("paymentMethodCreditCardLink", "paymentMethod", payment_method_df["lookup"], "creditCard", credit_card_df["lookup"])
+        reservation_linked_reservation_link_df = self.link_table_processor("reservationLinkedReservationLink", "reservation", reservation_df["lookup"], "linkedReservation", linked_reservation_df["lookup"])
 
         return {
             "hotel": hotel_df,
@@ -970,9 +1063,35 @@ class ReservationCreateModifyProcessor(BaseEventProcessor):
             "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "loyaltyRewardsMembership": loyalty_reward_membership_df,
+            "reservationItem": reservation_item_df,
+            "reservedInventory": reserved_inventory_df,
+            "reservedRate": reserved_rate_df,
+            "reservedRoom": reserved_room_df,
+            "specialRequest": special_request_df,
+            "guarantee": guarantee_df,
+            "creditCard": credit_card_df,
+            "paymentMethod": payment_method_df,
             "travelAgent": travel_agent_df,
             "company": company_df,
-            "group": group_df,
+            "linkedReservation": linked_reservation_df,
+            
+            "reservation": reservation_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationStatusLink": reservation_status_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerLoyaltyRewardsMembershipLink": customer_loyalty_rewards_membership_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
+            "reservationItemLink": reservation_item_link_df,
+            "reservationItemReservedInventoryLink": reservation_item_reserved_inventory_link_df,
+            "reservationItemReservedRateLink": reservation_item_reserved_rate_link_df,
+            "reservationItemSpecialRequestLink": reservation_item_special_request_link_df,
+            "reservationGuaranteeLink": reservation_guarantee_link_df,
+            "reservationPaymentMethodLink": reservation_payment_method_link_df,
+            "paymentMethodCreditCardLink": payment_method_credit_card_link_df,
+            "reservationLinkedReservationLink": reservation_linked_reservation_link_df,
         }
 
 class ReservationCancelProcessor(BaseEventProcessor):
@@ -987,19 +1106,36 @@ class ReservationCancelProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
         company_df = self.generic_table_processor(event_type, "company", event_df)
         reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
 
         # phase 2 tables
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}, {"company": company_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
+
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
             "company": company_df,
             "reservedRoom": reserved_room_df,
+            
+            "reservation": reservation_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
         }
 
 class ReservationCheckInProcessor(BaseEventProcessor):
@@ -1016,15 +1152,38 @@ class ReservationCheckInProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        company_df = self.generic_table_processor(event_type, "company", event_df)
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
+        
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}, {"company": company_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
 
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
+        
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "company": company_df,
+            "reservedRoom": reserved_room_df,
+
+            "reservation": reservation_df,
+            
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationStatusLink": reservation_status_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
         }
 
 class ReservationCheckOutProcessor(BaseEventProcessor):
@@ -1040,35 +1199,51 @@ class ReservationCheckOutProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.reservation_checkout_confirmation_number_processor(event_type, event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
         company_df = self.generic_table_processor(event_type, "company", event_df)
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
+        # currently not importing the foliosummary table
 
-        if(hotel_df is not None):
-            print("hotel_df in reservation check out processor")
-            hotel_success_df = hotel_df["succeeded"]
-            if(hotel_success_df is not None):
-                print("hotel_success_df in reservation check out processor")
-                hotel_success_df.show(20, truncate=False)
-        if(company_df is not None):
-            print("company_df in reservation check out processor")
-            company_success_df = company_df["succeeded"]
-            if(company_success_df is not None):
-                print("company_success_df in reservation check out processor")
-                company_success_df.show(20, truncate=False)
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}, {"company": company_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
 
-        # phase 2 tables
-        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
-        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
+        
+
+        # # phase 2 tables
+        # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
         
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,  
             "company": company_df,
-            "group": group_df,
+            "reservedRoom": reserved_room_df,
+            
+            "reservation": reservation_df,
+            # "group": group_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationStatusLink": reservation_status_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
         }
 
 class ReservationRoomAssignedProcessor(BaseEventProcessor):
@@ -1085,15 +1260,37 @@ class ReservationRoomAssignedProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
+
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
+        
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "reservedRoom": reserved_room_df,
+
+            "reservation": reservation_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationStatusLink": reservation_status_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
         }
 
 class ReservationRoomChangeProcessor(BaseEventProcessor):
@@ -1109,15 +1306,36 @@ class ReservationRoomChangeProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
-        
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
+
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
+
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "reservationStatus": reservation_status_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+            "reservedRoom": reserved_room_df,
+
+            "reservation": reservation_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationStatusLink": reservation_status_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
         }
     
 class ReservationECheckInProcessor(BaseEventProcessor):
@@ -1133,11 +1351,26 @@ class ReservationECheckInProcessor(BaseEventProcessor):
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         reservation_status_df = self.generic_table_processor(event_type, "reservationStatus", event_df)
+        reserved_room_df = self.generic_table_processor(event_type, "reservedRoom", event_df)
+
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"reservedRoom": reserved_room_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
+
+        # not importing housekeping status from the phase 2 table currently
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_status_link_df = self.link_table_processor("reservationStatusLink", "reservation", reservation_df["lookup"], "reservationStatus", reservation_status_df["lookup"])
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
-            "reservationStatus": reservation_status_df
+            "reservationStatus": reservation_status_df,
+            "reservedRoom": reserved_room_df,
+
+            "reservation": reservation_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationStatusLink": reservation_status_link_df,
         }
 
 class ReservationEmailConfirmationProcessor(BaseEventProcessor):
@@ -1152,14 +1385,31 @@ class ReservationEmailConfirmationProcessor(BaseEventProcessor):
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        customer_df = self.generic_table_processor(event_type, "customer", event_df)
         contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
         contact_df = self.generic_table_processor(event_type, "contact", event_df)
+
+        reservation_parent_df = [{"hotel": hotel_df["lookup"]}, {"customer": customer_df["lookup"]}]
+        reservation_df = self.generic_table_processor(event_type, "reservation", event_df, reservation_parent_df)
+
+        reservation_confirmation_number_link_df = self.link_table_processor("reservationConfirmationNumberLink", "reservation", reservation_df["lookup"], "confirmationNumber", confirmation_number_df["lookup"])
+        reservation_customer_link_df = self.link_table_processor("reservationCustomerLink", "reservation", reservation_df["lookup"], "customer", customer_df["lookup"])
+        customer_contact_link_df = self.link_table_processor("customerContactLink", "customer", customer_df["lookup"], "contact", contact_df["lookup"])
+        contact_contact_purpose_link_df = self.link_table_processor("contactContactPurposeLink", "contact", contact_df["lookup"], "contactPurpose", contact_purpose_df["lookup"])
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
+            "customer": customer_df,
             "contactPurpose": contact_purpose_df,
             "contact": contact_df,
+
+            "reservation": reservation_df,
+
+            "reservationConfirmationNumberLink": reservation_confirmation_number_link_df,
+            "reservationCustomerLink": reservation_customer_link_df,
+            "customerContactLink": customer_contact_link_df,
+            "contactContactPurposeLink": contact_contact_purpose_link_df,
         }
 
 class GroupCreateModifyProcessor(BaseEventProcessor):
@@ -1179,27 +1429,8 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
         company_df = self.generic_table_processor(event_type, "company", event_df)
         travel_agent_df = self.generic_table_processor(event_type, "travelAgent", event_df)
 
-        # phase 2 tables
-        if(hotel_df is not None):
-            print("hotel_df in group create modify processor")
-            hotel_success_df = hotel_df["succeeded"]
-            if(hotel_success_df is not None):
-                print("hotel_success_df in group create modify processor")
-                hotel_success_df.show(20, truncate=False)
-        if(company_df is not None):
-            print("company_df in group create modify processor")
-            company_success_df = company_df["succeeded"]
-            if(company_success_df is not None):
-                print("company_success_df in group create modify processor")
-                company_success_df.show(20, truncate=False)
-        if(travel_agent_df is not None):
-            print("travel_agent_df in group create modify processor")
-            travel_agent_success_df = travel_agent_df["succeeded"]
-            if(travel_agent_success_df is not None):
-                print("travel_agent_success_df in group create modify processor")
-                travel_agent_success_df.show(20, truncate=False)
-        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}, {"travelAgent": travel_agent_success_df}]
-        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}, {"travelAgent": travel_agent_success_df}]
+        # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
@@ -1208,7 +1439,7 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
             "contact": contact_df,
             "company": company_df,
             "travelAgent": travel_agent_df,
-            "group": group_df,
+            # "group": group_df,
         }
 
 class GroupCancelProcessor(BaseEventProcessor):
@@ -1225,28 +1456,15 @@ class GroupCancelProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         company_df = self.generic_table_processor(event_type, "company", event_df)
 
-        if(hotel_df is not None):
-            print("hotel_df in group cancel processor")
-            hotel_success_df = hotel_df["succeeded"]
-            if(hotel_success_df is not None):
-                print("hotel_success_df in group cancel processor")
-                hotel_success_df.show(20, truncate=False)
-        if(company_df is not None):
-            print("company_df in group cancel processor")
-            company_success_df = company_df["succeeded"]
-            if(company_success_df is not None):
-                print("company_success_df in group cancel processor")
-                company_success_df.show(20, truncate=False)
-
-        # phase 2 tables
-        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
-        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        # # phase 2 tables
+        # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "company": company_df,
-            "group": group_df,
+            # "group": group_df,
         }
 
 class GroupCheckOutProcessor(BaseEventProcessor):
@@ -1263,28 +1481,15 @@ class GroupCheckOutProcessor(BaseEventProcessor):
         confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
         company_df = self.generic_table_processor(event_type, "company", event_df)
 
-        if(hotel_df is not None):
-            print("hotel_df in group check out processor")
-            hotel_success_df = hotel_df["succeeded"]
-            if(hotel_success_df is not None):
-                print("hotel_success_df in group check out processor")
-                hotel_success_df.show(20, truncate=False)
-        if(company_df is not None):
-            print("company_df in group check out processor")
-            company_success_df = company_df["succeeded"]
-            if(company_success_df is not None):
-                print("company_success_df in group check out processor")
-                company_success_df.show(20, truncate=False)
-
-        # phase 2 tables
-        group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
-        group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        # # phase 2 tables
+        # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
         return {
             "hotel": hotel_df,
             "confirmationNumber": confirmation_number_df,
             "company": company_df,
-            "group": group_df,
+            # "group": group_df,
         }
 
 class AppliedRateUpdateProcessor(BaseEventProcessor):
