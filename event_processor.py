@@ -550,7 +550,7 @@ class BaseEventProcessor:
         for field in udf_schema.fields:
             df = df.withColumn(field.name, F.col(f"extracted_data.{field.name}"))
         
-        return df.drop("extracted_data")
+        return df.drop("extracted_data", "raw")
 
     def _extract_array(self, df: DataFrame, field_mapping: Dict[str, str], table_name: str) -> DataFrame:
         """
@@ -611,7 +611,7 @@ class BaseEventProcessor:
         for field in udf_schema.fields:
             df = df.withColumn(field.name, F.col(f"exploded_row.{field.name}"))
             
-        return df.drop("extracted_array", "exploded_row")
+        return df.drop("extracted_array", "exploded_row", "raw")
 
     def generate_record_hash(self, df: DataFrame, business_fields: list, hash_column_name: str = "sha256_hash") -> DataFrame:
         """
@@ -684,10 +684,37 @@ class BaseEventProcessor:
         extracted_hotel_df = self.process_dataframe(event_df, hotel_fields, table_name="hotel")
         print("hotel dataframe processed")
         
-        # 2. Apply Property Name Abbreviation Logic
+        succeeded_df = extracted_hotel_df["succeeded"]
+        failed_df = extracted_hotel_df["failed"]
+        lookup_df = extracted_hotel_df["lookup"]
+
+        # 2. Filter out "test" properties from succeeded and move to failed
+        if succeeded_df is not None and "propertyName" in succeeded_df.columns:
+            print("Filtering out properties containing 'test'")
+            # Case-insensitive check for "test"
+            is_test_condition = F.lower(F.col("propertyName")).contains("test")
+            
+            # Separate test records from valid records
+            test_records = succeeded_df.filter(is_test_condition)
+            valid_records = succeeded_df.filter(~is_test_condition)
+            
+            # Update failed_df: Add the test records to the existing failed records
+            if test_records.limit(1).count() > 0:
+                print(f"Rejecting {test_records.count()} records because propertyName contains 'test'")
+                failed_df = failed_df.unionByName(test_records)
+            
+            succeeded_df = valid_records
+            
+            # Also filter the lookup dataframe to prevent downstream child tables 
+            # from linking to these rejected hotels
+            if lookup_df is not None:
+                lookup_df = lookup_df.filter(~is_test_condition)
+
+        # 3. Apply Property Name Abbreviation Logic
         print("applying property name abbreviation logic")
         def abbreviate_name(df):
-            if "propertyName" not in df.columns: return df
+            if df is None or "propertyName" not in df.columns: 
+                return df
             return df.withColumn("propertyName_abbrev", 
                 F.when(F.col("propertyName").rlike("^[A-Za-z]+ [A-Za-z]+ "),
                 F.concat(F.upper(F.substring(F.regexp_extract(F.col("propertyName"), r"^([A-Za-z]+)", 1), 1, 1)),
@@ -697,9 +724,9 @@ class BaseEventProcessor:
         
         print("property name abbreviation logic applied")
         return {
-            "succeeded": abbreviate_name(extracted_hotel_df["succeeded"]),
-            "failed": extracted_hotel_df["failed"],
-            "lookup": extracted_hotel_df["lookup"]
+            "succeeded": abbreviate_name(succeeded_df),
+            "failed": failed_df,
+            "lookup": lookup_df
         }
     
     def generic_table_processor(self, event_type: str, table_name: str, event_df: DataFrame, parent_df: list[Dict[str, DataFrame]] = None) -> Dict[str, DataFrame]:

@@ -36,7 +36,7 @@ class IncrementalJobConfig:
     BUCKET_NAME = "noble-raw-useast1-183171473439-prod"
     STATE_FILE_KEY = "last_raw_processed.json"
     BASE_PREFIX = "source=sky-touch-raw/schema=reservation/"
-    MAX_CHUNK_ROWS = 500
+    MAX_CHUNK_ROWS = 5000
 
 
 class S3StateManager:
