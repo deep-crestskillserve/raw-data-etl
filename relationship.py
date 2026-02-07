@@ -23,7 +23,7 @@ schema_map = {
         "confirmationNumber": {"local_column": "confirmation_number_id", "parent_column": "id"}
     },
     "reservationStatusLink": {
-        "reservation": {"local_column": "id", "parent_column": "id"},
+        "reservation": {"local_column": "reservation_id", "parent_column": "id"},
         "reservationStatus": {"local_column": "status_id", "parent_column": "id"}
     },
     "customerLoyaltyRewardsMembershipLink": {
@@ -43,7 +43,7 @@ schema_map = {
         "contact": {"local_column": "contact_id", "parent_column": "id"}
     },
     "reservationCustomerLink": {
-        "reservation": {"local_column": "id", "parent_column": "id"},
+        "reservation": {"local_column": "reservation_id", "parent_column": "id"},
         "customer": {"local_column": "customer_id", "parent_column": "id"}
     },
     "reservationEmailAddressLink": {

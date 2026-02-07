@@ -751,6 +751,7 @@ class BaseEventProcessor:
     ) -> Dict[str, DataFrame]:
         """
         Links two dataframes based on source_id and creates a mapping between their ID columns.
+        Drops records where either table_1_id or table_2_id is null.
         
         Args:
             final_table_name: Name of the final table to link the two tables
@@ -789,40 +790,18 @@ class BaseEventProcessor:
 
         d1 = df_1.select(F.col("source_id").alias("s_id_1"), F.col(table_1_id).alias(final_df_1_id))
         d2 = df_2.select(F.col("source_id").alias("s_id_2"), F.col("received_at"), F.col(table_2_id).alias(final_df_2_id))
-
+        
         d1.show(20, truncate=False)
         d2.show(20, truncate=False)
 
+        # Join on source_id
         linked_df = d1.join(
             d2,
             d1["s_id_1"] == d2["s_id_2"],
             how="inner"
         )
-        # df_1_subset = df_1[['source_id', table_1_id]]
-        # df_1_subset.show(20, truncate=False)
-        # print("selecting source_id, table_2_id, received_at from df_2")
-        # df_2_subset = df_2[['source_id', table_2_id, 'received_at']]
-        # df_2_subset.show(20, truncate=False)
-        # # Perform inner join on source_id to link matching records
-        # print("performing inner join on source_id to link records originating from the same payload")
-        # result_df = df_1_subset.merge(
-        #     df_2_subset, 
-        #     on='source_id', 
-        #     how='inner'
-        # )
-        # result_df.show(20, truncate=False)
-        # # Select only the ID columns and rename them
-        # print("renaming table_1_id and table_2_id to final_df_1_id and final_df_2_id and selecting source_id, received_at")
-        # final_df = result_df[[table_1_id, table_2_id, 'received_at', 'source_id']].rename(
-        #     columns={
-        #         table_1_id: final_df_1_id,
-        #         table_2_id: final_df_2_id
-        #     }
-        # )
-        # print("final_df")
-        # final_df.show(20, truncate=False)
-        # print("--------------------------------")
-        # return final_df
+
+        # 1. Select the final columns
         linked_df = linked_df.select(
             F.col("s_id_1").alias("source_id"),
             F.col("received_at"),
@@ -830,6 +809,14 @@ class BaseEventProcessor:
             F.col(final_df_2_id)
         )
 
+        # 2. NEW: Filter out records where either foreign key is null
+        # This ensures the link table actually links two existing entities
+        linked_df = linked_df.filter(
+            F.col(final_df_1_id).isNotNull() & 
+            F.col(final_df_2_id).isNotNull()
+        )
+
+        # Generate Record Hash & UUID
         linked_df = self.generate_record_hash(
             linked_df, 
             business_fields=[final_df_1_id, final_df_2_id], 
@@ -1581,9 +1568,14 @@ class InventoryBatchProcessor(BaseEventProcessor):
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
+
+        #phase 2 tables
+        inventory_parent_df = [{"hotel": hotel_df["lookup"]}]
+        inventory_batch_df = self.generic_table_processor(event_type, "inventoryBatch", event_df, inventory_parent_df)
         
         return {
             "hotel": hotel_df,
+            "inventoryBatch": inventory_batch_df,
         }
 
 class InventoryUpdateProcessor(BaseEventProcessor):
@@ -1597,9 +1589,19 @@ class InventoryUpdateProcessor(BaseEventProcessor):
 
         # phase 1 tables
         hotel_df = self.hotel_processor(event_type, event_df)
+
+        inventory_available_count_parent_df = [{"hotel": hotel_df["lookup"]}]
+        inventory_available_count_df = self.generic_table_processor(event_type, "inventoryAvailableCount", event_df, inventory_available_count_parent_df)
+        inventory_out_of_order_count_parent_df = [{"hotel": hotel_df["lookup"]}]
+        inventory_out_of_order_count_df = self.generic_table_processor(event_type, "inventoryOutOfOrderCount", event_df, inventory_out_of_order_count_parent_df)
+        inventory_physical_count_parent_df = [{"hotel": hotel_df["lookup"]}]
+        inventory_physical_count_df = self.generic_table_processor(event_type, "inventoryPhysicalCount", event_df, inventory_physical_count_parent_df)
         
         return {
             "hotel": hotel_df,
+            "inventoryAvailableCount": inventory_available_count_df,
+            "inventoryOutOfOrderCount": inventory_out_of_order_count_df,
+            "inventoryPhysicalCount": inventory_physical_count_df,
         }
 
 class housekeepingStatusProcessor(BaseEventProcessor):
