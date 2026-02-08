@@ -10,7 +10,93 @@ from database_connection import create_db_connection_from_secrets
 from event_processor import process_events_by_type, handle_null_values 
 import pyspark.sql.functions as F
 
+TABLE_INSERT_PRIORITY = [
+    # LAYER 0: Independent Base Entities
+    "hotel",
+    "confirmationNumber",
+    "reservationStatus",
+    "customer",
+    "contact",
+    "contactPurpose",
+    "travelAgent",
+    "company",
+    "reservedRoom",
+    "reservationItem",
+    "reservedInventory",
+    "reservedRate",
+    "specialRequest",
+    "creditCard",
+    "guarantee",
+    "paymentMethod",
+    "loyaltyRewardsMembership",
+    "linkedReservation",
+    "folioSummary",
+    "folioItem",
+    "accountStatus",
+    "groupBlock",
+    "groupRate",
+    "cleaningSchedule",
+    "ratePlanCode",
+    "amountOffRate",
+    "percentOffRate",
+    "amountAboveRate",
+    "percentAboveRate",
+    "amountFixedRate",
+    "extraCharge",
+    "bookingChannel",
 
+    # LAYER 1: Entities dependent on Layer 0
+    "group",              # FKs: hotel, company, travelAgent
+    "housekeepingStatus", # FKs: hotel
+    "inventoryBatch",     # FKs: hotel
+    "inventoryAvailableCount", # FKs: hotel
+    "inventoryOutOfOrderCount", # FKs: hotel
+    "inventoryPhysicalCount",   # FKs: hotel
+    "rate",               # FKs: hotel
+
+    # LAYER 2: Entities dependent on Layer 0 and Layer 1
+    "reservation",        # FKs: hotel, reservedRoom, travelAgent, group, company
+
+    # LAYER 3: Link Tables (Must be last)
+    "reservationConfirmationNumberLink",
+    "reservationStatusLink",
+    "reservationCustomerLink",
+    "customerLoyaltyRewardsMembershipLink",
+    "customerContactLink",
+    "contactContactPurposeLink",
+    "groupContactLink",
+    "reservationEmailAddressLink",
+    "reservationItemReservedInventoryLink",
+    "reservationItemReservedRateLink",
+    "reservationItemReservedRoomLink",
+    "reservationItemSpecialRequestLink",
+    "reservationItemLink",
+    "guaranteeCreditCardLink",
+    "reservationGuaranteeLink",
+    "paymentMethodCreditCardLink",
+    "reservationPaymentMethodLink",
+    "reservationLinkedReservationLink",
+    "reservationFolioSummaryLink",
+    "groupFolioSummaryLink",
+    "groupAccountStatusLink",
+    "groupConfirmationNumberLink",
+    "groupGroupBlockLink",
+    "groupGroupRateLink",
+    "groupPlannerCreditCardLink",
+    "groupGuestCreditCardLink",
+    "groupPaymentMethodLink",
+    "groupLoyaltyRewardsMembershipLink",
+    "rateRatePlanCodeLink",
+    "rateAmountOffRateLink",
+    "ratePercentOffRateLink",
+    "rateAmountAboveRateLink",
+    "ratePercentAboveRateLink",
+    "rateAmountFixedRateLink",
+    "rateExtraChargeLink",
+    "housekeepingStatusConfirmationNumberLink",
+    "groupFolioItemLink",
+    "reservationCleaningScheduleLink"
+]
 
 def main():
     """Main execution function for AWS Glue job."""
@@ -67,15 +153,32 @@ def main():
 
         # 1. Process Succeeded records (S3 + RDS)
         if final_success:
-            for t, df in final_success.items():
-                print(f"Writing {t} to Success: {df.count()} rows")
-
-            db_conn.write_dataframe_to_s3(
-                processed_dfs=final_success,
-                start_id=start_id, end_id=end_id,
-                year=year, month=month, day=day,
-                succeeded=True
+            # Sort tables based on priority list, others at the end
+            sorted_tables = sorted(
+                final_success.keys(), 
+                key=lambda x: TABLE_INSERT_PRIORITY.index(x) if x in TABLE_INSERT_PRIORITY else 999
             )
+
+            for t in sorted_tables:
+                df = final_success.get(t)
+
+                # Check if df is None
+                if df is None:
+                    print(f"Skipping {t}: No DataFrame found.")
+                    continue
+                    
+                # Check if df is empty before calling write_dataframe_to_s3
+                # This saves time and avoids logging "Success" for 0 rows
+                if df.limit(1).count() == 0:
+                    print(f"Skipping {t}: DataFrame is empty (0 rows).")
+                    continue
+                print(f"Writing {t} to Success: {df.count()} rows")
+                db_conn.write_dataframe_to_s3(
+                    processed_dfs={t: df},
+                    start_id=start_id, end_id=end_id,
+                    year=year, month=month, day=day,
+                    succeeded=True
+                )
         
         # 2. Process Failed records (S3 Only)
         if final_failure:
