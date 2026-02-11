@@ -194,8 +194,7 @@ def main():
     else:
         print("No input data found")
         job.commit()
-        sys.exit(0)
-
+        return
 
 if __name__ == "__main__":
     main()
