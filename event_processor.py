@@ -1,4 +1,6 @@
 from pyspark.sql import DataFrame
+from database_connection import create_db_connection_from_secrets
+
 from pyspark.sql import functions as F
 from typing import Dict, Callable, Any, Optional, Tuple
 from pyspark.sql import SparkSession
@@ -654,22 +656,53 @@ class BaseEventProcessor:
         Returns:
             DataFrame containing only records not present in the audit table
         """
-        # 1. Retrieve the existing audit data for this table
-        audit_df = self.audit_dfs.get(table_name)
-        if audit_df is None:
-            return table_df
 
+        # 1. Quick check: If the processed data is empty, don't bother the database
+        if table_df is None or table_df.limit(1).count() == 0:
+            return table_df
+        # # 1. Retrieve the existing audit data for this table
+        # audit_df = self.audit_dfs.get(table_name)
+        # if audit_df is None:
+        #     return table_df
+
+        print(f"--- Lazy Audit: Checking Aurora for existing IDs in '{table_name}' ---")
+        try:
+            # 2. Create a one-time connection to fetch only the IDs for THIS table
+            db_source = create_db_connection_from_secrets(
+                secret_name="prod/noble/mysql/noble_db_v2",
+                database="noble_db_v2"
+            )
+
+            # 3. Read ONLY the 'id' column from the target Aurora table
+            # This is much faster than loading all 75 tables at once
+
+            existing_ids = db_source.read_table(self.spark, table_name).select("id")
+
+            # 4. Perform Left Anti Join: Keep only rows that DO NOT exist in Aurora
+            new_records_df = table_df.join(
+                existing_ids,
+                on="id", 
+                how="left_anti"
+            )
+            print("audit processor completed")
+
+            return new_records_df
+
+        except Exception as e:
+            # If the table doesn't exist yet in RDS, all records are "new"
+            print(f"Audit skipped for {table_name}: {e}")
+            return table_df
         # 3. Perform a Left Anti Join
         # We use the deterministic 'id' (the UUID generated from business keys) 
         # to identify unique records.
         # This keeps only rows in table_df that DO NOT exist in audit_df.
-        new_records_df = table_df.join(
-            audit_df.select("id"),  # Only select the ID to keep the join slim
-            on="id", 
-            how="left_anti"
-        )
+        # new_records_df = table_df.join(
+        #     audit_df.select("id"),  # Only select the ID to keep the join slim
+        #     on="id", 
+        #     how="left_anti"
+        # )
 
-        return new_records_df
+        # return new_records_df
     
     def hotel_processor(self, event_type: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         print("--------------------------------")
@@ -955,12 +988,12 @@ def process_events_by_type(spark: SparkSession, processed_df: DataFrame, audit_d
         "groupModify": GroupCreateModifyProcessor,
         "groupCheckOut": GroupCheckOutProcessor,
         "groupCancel": GroupCancelProcessor,
-        "inventoryUpdate": InventoryUpdateProcessor,
+        # "inventoryUpdate": InventoryUpdateProcessor,
         "inventoryBatch": InventoryBatchProcessor,
-        "appliedRateUpdate": AppliedRateUpdateProcessor,
-        "bestAvailableRateUpdate": BestAvailableRateUpdateProcessor,
-        "discountRateUpdate": DiscountRateUpdateProcessor,
-        "fixedRateUpdate": FixedRateUpdateProcessor
+        # "appliedRateUpdate": AppliedRateUpdateProcessor,
+        # "bestAvailableRateUpdate": BestAvailableRateUpdateProcessor,
+        # "discountRateUpdate": DiscountRateUpdateProcessor,
+        # "fixedRateUpdate": FixedRateUpdateProcessor
     }
     
     # Get unique event types present in the dataframe
@@ -1481,100 +1514,108 @@ class GroupCreateModifyProcessor(BaseEventProcessor):
     """Processor for groupCreate and groupModify events."""
     def process(self, event_df: DataFrame) -> dict[str, DataFrame]:
         
-        event_type = "groupCreate"
-        print("--------------------------------")
-        print("in GroupCreateModifyProcessor")
-        print(f"event type: {event_type}")
+        # event_type = "groupCreate"
+        # print("--------------------------------")
+        # print("in GroupCreateModifyProcessor")
+        # print(f"event type: {event_type}")
         
-        # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df)
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
-        contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
-        contact_df = self.generic_table_processor(event_type, "contact", event_df)
-        company_df = self.generic_table_processor(event_type, "company", event_df)
-        travel_agent_df = self.generic_table_processor(event_type, "travelAgent", event_df)
+        # # phase 1 tables
+        # hotel_df = self.hotel_processor(event_type, event_df)
+        # confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        # contact_purpose_df = self.generic_table_processor(event_type, "contactPurpose", event_df)
+        # contact_df = self.generic_table_processor(event_type, "contact", event_df)
+        # company_df = self.generic_table_processor(event_type, "company", event_df)
+        # travel_agent_df = self.generic_table_processor(event_type, "travelAgent", event_df)
 
-        # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}, {"travelAgent": travel_agent_success_df}]
-        # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        # # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}, {"travelAgent": travel_agent_success_df}]
+        # # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
-        return {
-            "hotel": hotel_df,
-            "confirmationNumber": confirmation_number_df,
-            "contactPurpose": contact_purpose_df,
-            "contact": contact_df,
-            "company": company_df,
-            "travelAgent": travel_agent_df,
-            # "group": group_df,
-        }
+        # return {
+        #     "hotel": hotel_df,
+        #     "confirmationNumber": confirmation_number_df,
+        #     "contactPurpose": contact_purpose_df,
+        #     "contact": contact_df,
+        #     "company": company_df,
+        #     "travelAgent": travel_agent_df,
+        #     # "group": group_df,
+        # }
+        print("GroupCreateModifyProcessor not implemented")
+        return {}
 
 class GroupCancelProcessor(BaseEventProcessor):
     """Processor for groupCancel events."""
     def process(self, event_df: DataFrame) -> dict[str, DataFrame]:
         
-        event_type = "groupCancel"
-        print("--------------------------------")
-        print("in GroupCancelProcessor")
-        print(f"event type: {event_type}")
+        # event_type = "groupCancel"
+        # print("--------------------------------")
+        # print("in GroupCancelProcessor")
+        # print(f"event type: {event_type}")
         
-        # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df)
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
-        company_df = self.generic_table_processor(event_type, "company", event_df)
+        # # phase 1 tables
+        # hotel_df = self.hotel_processor(event_type, event_df)
+        # confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        # company_df = self.generic_table_processor(event_type, "company", event_df)
 
-        # # phase 2 tables
-        # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
-        # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
+        # # # phase 2 tables
+        # # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
+        # # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
-        return {
-            "hotel": hotel_df,
-            "confirmationNumber": confirmation_number_df,
-            "company": company_df,
-            # "group": group_df,
-        }
+        # return {
+        #     "hotel": hotel_df,
+        #     "confirmationNumber": confirmation_number_df,
+        #     "company": company_df,
+        #     # "group": group_df,
+        # }
+        print("GroupCancelProcessor not implemented")
+        return {}
 
 class GroupCheckOutProcessor(BaseEventProcessor):
     """Processor for groupCheckOut events."""
     def process(self, event_df: DataFrame) -> dict[str, DataFrame]:
         
-        event_type = "groupCheckOut"
-        print("--------------------------------")
-        print("in GroupCheckOutProcessor")
-        print(f"event type: {event_type}")
+        # event_type = "groupCheckOut"
+        # print("--------------------------------")
+        # print("in GroupCheckOutProcessor")
+        # print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df)
-        confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
-        company_df = self.generic_table_processor(event_type, "company", event_df)
+        # hotel_df = self.hotel_processor(event_type, event_df)
+        # confirmation_number_df = self.generic_table_processor(event_type, "confirmationNumber", event_df)
+        # company_df = self.generic_table_processor(event_type, "company", event_df)
 
         # # phase 2 tables
         # group_parent_df = [{"hotel": hotel_success_df}, {"company": company_success_df}]
         # group_df = self.generic_table_processor(event_type, "group", event_df, group_parent_df)
 
-        return {
-            "hotel": hotel_df,
-            "confirmationNumber": confirmation_number_df,
-            "company": company_df,
-            # "group": group_df,
-        }
+        # return {
+        #     "hotel": hotel_df,
+        #     "confirmationNumber": confirmation_number_df,
+        #     "company": company_df,
+        #     # "group": group_df,
+        # }
+        print("GroupCheckOutProcessor not implemented")
+        return {}
 
 class AppliedRateUpdateProcessor(BaseEventProcessor):
     """Processor for appliedRateUpdate events."""
     def process(self, event_df: DataFrame) -> dict[str, DataFrame]:
         
-        event_type = "appliedRateUpdate"
-        print("--------------------------------")
-        print("in AppliedRateUpdateProcessor")
-        print(f"event type: {event_type}")
+        # event_type = "appliedRateUpdate"
+        # print("--------------------------------")
+        # print("in AppliedRateUpdateProcessor")
+        # print(f"event type: {event_type}")
 
         # phase 1 tables
-        hotel_df = self.hotel_processor(event_type, event_df)
+        # hotel_df = self.hotel_processor(event_type, event_df)
 
         #phase 2 tables
         # rate_df = self.rate_phase2_processor(event_type, "rate", event_df, hotel_df, "hotel_id")
         
-        return {
-            "hotel": hotel_df,
-        }
+        # return {
+        #     "hotel": hotel_df,
+        # }
+        print("AppliedRateUpdateProcessor not implemented")
+        return {}
 
 class DiscountRateUpdateProcessor(BaseEventProcessor):
     """Processor for discountRateUpdate events."""
