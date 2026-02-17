@@ -9,7 +9,7 @@ schema_map = {
         "reservedRoom": {"local_column": "reservedRoom", "parent_column": "id"},
         # "reservedRoom_2": {"local_column": "checkedOutRoom_id", "parent_column": "id"},
         "travelAgent": {"local_column": "associations_travelAgent_id", "parent_column": "id"},
-        # "group": {"local_column": "associations_groups_id", "parent_column": "id"},
+        "group": {"local_column": "associations_groups_id", "parent_column": "id"},
         # "group_2": {"local_column": "checkOut_group_id", "parent_column": "id"},
         "company": {"local_column": "associations_company_id", "parent_column": "id"},
         # "bookingChannel": {"local_column": "sourceOfBusiness_externalSource_sourceId", "parent_column": "internalCode"}

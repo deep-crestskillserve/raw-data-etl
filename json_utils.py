@@ -1,14 +1,12 @@
 """
 JSON Path Utility Functions for AWS Glue Jobs
 Handles extraction of values from JSON strings using dot-notation paths,
-including support for arrays and nested arrays.
+including support for arrays, nested arrays, and complex structures.
 """
 
 import json
 import re
 from typing import Any, List, Union, Optional
-
-
 
 def extract_json_value(json_str: Union[str, dict], path: str) -> Any:
     """
@@ -18,7 +16,7 @@ def extract_json_value(json_str: Union[str, dict], path: str) -> Any:
     - Standard keys: 'reservation.hotel.hotelId'
     - All array items: 'reservation.reservationItems[].itemType'
     - Specific index: 'reservation.reservationCustomers[0].customer.firstName'
-    - Mixed: 'reservation.reservationItems[].reservedRates[0].rateAmount'
+    - Nested arrays (List of Lists): 'reservation.linkedReservations[].confirmationNumber'
     
     Returns:
         - A single value if the path results in one match.
@@ -31,15 +29,12 @@ def extract_json_value(json_str: Union[str, dict], path: str) -> Any:
     try:
         data = json.loads(json_str) if isinstance(json_str, str) else json_str
     except Exception as e:
-        print(f"Error parsing JSON: {e}")
+        print(f"ERROR: Failed to parse JSON: {str(e)}")
+        print(f"JSON string (first 500 chars): {str(json_str)[:500]}")
         return None
 
-    # Resulting matches
     current_targets = [data]
-    # Track if the user explicitly asked for an array via []
     requested_array = "[]" in path
-
-    # Split path by dots
     parts = path.split('.')
 
     for part in parts:
@@ -52,7 +47,25 @@ def extract_json_value(json_str: Union[str, dict], path: str) -> Any:
             
         key, index_str = match.groups()
 
-        for item in current_targets:
+        # --- STEP 1: NORMALIZE TARGETS ---
+        # If the previous step left us with nested lists (e.g., [[{...}], [{...}]]),
+        # we flatten them so we can access the 'key' inside the dictionaries.
+        normalized_targets = []
+        def flatten(node):
+            if isinstance(node, list):
+                for item in node:
+                    flatten(item)
+            elif node is not None:
+                normalized_targets.append(node)
+        
+        for t in current_targets:
+            if isinstance(t, list):
+                flatten(t)
+            else:
+                normalized_targets.append(t)
+
+        # --- STEP 2: EXTRACT KEY ---
+        for item in normalized_targets:
             if not isinstance(item, dict) or key not in item:
                 continue
             
@@ -69,7 +82,7 @@ def extract_json_value(json_str: Union[str, dict], path: str) -> Any:
                 if isinstance(val, list) and 0 <= idx < len(val):
                     next_targets.append(val[idx])
                 else:
-                    continue # Index out of bounds or not a list
+                    continue
             
             else:  # Case: simple key
                 if val is not None:
@@ -77,14 +90,11 @@ def extract_json_value(json_str: Union[str, dict], path: str) -> Any:
         
         current_targets = next_targets
 
-    # Return Logic:
     if not current_targets:
         return None
     
-    # If the user used '[]' anywhere, they likely expect a list, 
-    # even if it only contains one item.
+    # Maintain existing return logic
     if requested_array:
         return current_targets
     
-    # Otherwise, return single value if only one exists, else the list
     return current_targets[0] if len(current_targets) == 1 else current_targets

@@ -175,9 +175,6 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
                 'cardIsVirtual': 'reservation.guarantee.creditCard.cardIsVirtual',
                 'cardType': 'reservation.guarantee.creditCard.cardType',
                 'lastFourDigits': 'reservation.guarantee.creditCard.lastFourDigits',
-                'cardIsVirtual': 'reservation.paymentMethods[].creditCard.cardIsVirtual',
-                'cardType': 'reservation.paymentMethods[].creditCard.cardType',
-                'lastFourDigits': 'reservation.paymentMethods[].creditCard.lastFourDigits',
             },
             'paymentMethod': {
                 'folioId': 'reservation.paymentMethods[].folioId',
@@ -199,7 +196,14 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
             },
         },
         'phase2': {
+            'creditCard': {
+                'cardIsVirtual': 'reservation.paymentMethods[].creditCard.cardIsVirtual',
+                'cardType': 'reservation.paymentMethods[].creditCard.cardType',
+                'lastFourDigits': 'reservation.paymentMethods[].creditCard.lastFourDigits',
+            },
             'group': {
+                'eventInfo_name': 'eventInfo.name',
+                'eventInfo_version': 'eventInfo.version',
                 'groupId': 'reservation.associations[].group.groupId',
                 'name': 'reservation.associations[].group.name',
             },
@@ -417,6 +421,8 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
         },
         'phase2': {
             'group': {
+                'eventInfo_name': 'eventInfo.name',
+                'eventInfo_version': 'eventInfo.version',
                 'groupId': 'checkOut.group.groupId',
                 'name': 'checkOut.group.name',
             },
@@ -715,9 +721,6 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
                 'cardIsVirtual': 'group.groupGuarantee.groupPlannerGuarantee.creditCard.cardIsVirtual',
                 'cardType': 'group.groupGuarantee.groupPlannerGuarantee.creditCard.cardType',
                 'lastFourDigits': 'group.groupGuarantee.groupPlannerGuarantee.creditCard.lastFourDigits',
-                'cardIsVirtual': 'group.groupGuarantee.guestGuarantee.creditCard.cardIsVirtual',
-                'cardType': 'group.groupGuarantee.guestGuarantee.creditCard.cardType',
-                'lastFourDigits': 'group.groupGuarantee.guestGuarantee.creditCard.lastFourDigits',
             },
             'loyaltyRewardsMembership': {
                 'loyaltyType': 'group.loyaltyRewardsMemberships[].loyaltyType',
@@ -735,6 +738,11 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
             },
         },
         'phase2': {
+            'creditCard': {
+                'cardIsVirtual': 'group.groupGuarantee.guestGuarantee.creditCard.cardIsVirtual',
+                'cardType': 'group.groupGuarantee.guestGuarantee.creditCard.cardType',
+                'lastFourDigits': 'group.groupGuarantee.guestGuarantee.lastFourDigits',
+            },
             'group': {
                 'eventInfo_name': 'eventInfo.name',
                 'eventInfo_version': 'eventInfo.version',
@@ -811,6 +819,8 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
         },
         'phase2': {
             'group': {
+                'eventInfo_name': 'eventInfo.name',
+                'eventInfo_version': 'eventInfo.version',
                 'groupId': 'groupCancel.group.groupId',
                 'name': 'groupCancel.group.name',
                 'groupStayInfo_arrivalDate': 'groupCancel.group.groupStayInfo.arrivalDate',
@@ -858,6 +868,8 @@ EVENT_TABLE_MAPPINGS: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {
         },
         'phase2': {
             'group': {
+                'eventInfo_name': 'eventInfo.name',
+                'eventInfo_version': 'eventInfo.version',
                 'groupId': 'groupCheckOut.group.groupId',
                 'name': 'groupCheckOut.group.name',
                 'groupStayInfo_arrivalDate': 'groupCheckOut.group.groupStayInfo.arrivalDate',

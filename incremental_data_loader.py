@@ -267,11 +267,7 @@ class DataProcessor:
                 ).alias("event_name"),
 
                 # Clean raw JSON
-                F.regexp_replace(
-                    F.regexp_replace(F.col("raw"), '^"|"$', ''),
-                    '""',
-                    '"'
-                ).alias("raw")
+                F.col("raw")
             )
         )
         

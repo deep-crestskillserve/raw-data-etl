@@ -9,7 +9,7 @@ TABLE_TO_PHASE: Dict[str, Union[str, List[str]]] = {
     'confirmationNumber': ['phase1', 'phase2'],
     'contact': 'phase1',
     'contactPurpose': 'phase1',
-    'creditCard': 'phase1',
+    'creditCard': ['phase1', 'phase2'],
     'customer': 'phase1',
     'extraCharge': 'phase1',
     'folioItem': 'phase1',
