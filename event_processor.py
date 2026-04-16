@@ -379,7 +379,7 @@ class BaseEventProcessor:
             empty_df = self.spark.createDataFrame([], full_schema)
             return {"succeeded": empty_df, "failed": empty_df}
         
-        df_size_before = df.count()
+        # df_size_before = df.count()
 
         # STEP 1: Replace NULL markers with actual None
         for field in full_schema.fields:
@@ -432,8 +432,8 @@ class BaseEventProcessor:
         final_df = df.select(*select_expressions)
         
         # Validation - Split based on nullability
-        df_size_after = final_df.count()
-        print("Finalized DF with correct schema. Before: {}, After: {}".format(df_size_before, df_size_after))
+        # df_size_after = final_df.count()
+        # print("Finalized DF with correct schema. Before: {}, After: {}".format(df_size_before, df_size_after))
         
         # print("final_df dataframe")
         # final_df.show(20, truncate=False)
@@ -445,11 +445,11 @@ class BaseEventProcessor:
         
         # print("failed_df dataframe")
         # failed_df.show(20, truncate=False)
-        valid_df_size = valid_df.count()
-        failed_df_size = failed_df.count()
-        print("DF after validating nullability. Valid DF size: {}, Failed DF size: {}".format(valid_df_size, failed_df_size))
+        # valid_df_size = valid_df.count()
+        # failed_df_size = failed_df.count()
+        # print("DF after validating nullability. Valid DF size: {}, Failed DF size: {}".format(valid_df_size, failed_df_size))
 
-        print
+        print(f"Processing completed for {table_name}.")
         # Audit - Only audit valid records
         audited_valid_df = self.audit_processor(table_name, valid_df)
 
@@ -784,33 +784,35 @@ class BaseEventProcessor:
         # if audit_df is None:
         #     return table_df
 
-        print(f"--- Lazy Audit: Checking Aurora for existing IDs in '{table_name}' ---")
-        try:
-            # Create a one-time connection to fetch only the IDs for THIS table
-            db_source = create_db_connection_from_secrets(
-                secret_name="prod/noble/mysql/noble_db_v2",
-                # database="test_db"
-                database="noble_db_v2"
-            )
+        table_df = table_df.dropDuplicates(["id"])
 
-            # Read ONLY the 'id' column from the target Aurora table
+        # print(f"--- Lazy Audit: Checking Aurora for existing IDs in '{table_name}' ---")
+        # try:
+        #     # Create a one-time connection to fetch only the IDs for THIS table
+        #     db_source = create_db_connection_from_secrets(
+        #         secret_name="prod/noble/mysql/noble_db_v2",
+        #         # database="test_db"
+        #         database="noble_db_v2"
+        #     )
 
-            existing_ids = db_source.read_table(self.spark, table_name).select("id")
+        #     # Read ONLY the 'id' column from the target Aurora table
 
-            # Perform Left Anti Join: Keep only rows that DO NOT exist in Aurora
-            new_records_df = table_df.join(
-                existing_ids,
-                on="id", 
-                how="left_anti"
-            )
-            print("audit processor completed")
+        #     existing_ids = db_source.read_table(self.spark, table_name).select("id")
 
-            return new_records_df
+        #     # Perform Left Anti Join: Keep only rows that DO NOT exist in Aurora
+        #     new_records_df = table_df.join(
+        #         existing_ids,
+        #         on="id", 
+        #         how="left_anti"
+        #     )
+        #     print("audit processor completed")
 
-        except Exception as e:
-            # If the table doesn't exist yet in RDS, all records are "new"
-            print(f"Audit skipped for {table_name}: {e}")
-            return table_df
+        #     return new_records_df
+
+        # except Exception as e:
+        #     # If the table doesn't exist yet in RDS, all records are "new"
+        #     print(f"Audit skipped for {table_name}: {e}")
+        #     return table_df
         # 3. Perform a Left Anti Join
         # We use the deterministic 'id' (the UUID generated from business keys) 
         # to identify unique records.
@@ -822,6 +824,31 @@ class BaseEventProcessor:
         # )
 
         # return new_records_df
+
+        audit_s3_path = f"s3://noble-stage-useast1-183171473439-prod/source=sky-touch-raw/schema=reservation/audit_ids/{table_name}/"
+
+        try:
+            # Load existing IDs from S3
+            existing_ids = self.spark.read.parquet(audit_s3_path).select("id")
+
+            # Anti-join to keep only truly new records
+            new_records_df = table_df.join(existing_ids, on="id", how="left_anti")
+
+            print(f"Audit processor completed for {table_name}.")
+            return new_records_df
+        
+        except Exception as e:
+            # CRITICAL FIX 2: Better Error Handling
+            # If S3 is missing, the folder doesn't exist yet (first run)
+            err_msg = str(e)
+            if "Path does not exist" in err_msg or "AnalysisException" in err_msg:
+                print(f"Audit record not found for {table_name}, treating batch as new.")
+                return table_df
+            else:
+                # If it's a real error (like S3 permissions), DO NOT return table_df.
+                # Return an empty DF so we don't accidentally insert duplicates.
+                print(f"CRITICAL ERROR reading audit for {table_name}: {e}")
+                return self.spark.createDataFrame([], table_df.schema)
     
     def hotel_processor(self, event_type: str, event_df: DataFrame) -> Dict[str, DataFrame]:
         print("--------------------------------")
@@ -1045,7 +1072,7 @@ class BaseEventProcessor:
         # This prevents the 'Duplicate entry for key PRIMARY' error
         audited_valid_df = self.audit_processor(final_table_name, final_linked_df)
 
-        print(f"Finalized link table {final_table_name}. New unique records found: {audited_valid_df.count()}")
+        print(f"Finalized link table {final_table_name}.")
 
         return {
             "succeeded": audited_valid_df,

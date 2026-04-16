@@ -3,7 +3,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 import sys
-from incremental_data_loader import run_incremental_job
+from incremental_data_loader import run_incremental_job, S3StateManager, IncrementalJobConfig
 from event_processor import process_events_by_type 
 from audit_dfs import get_audit_dfs
 from database_connection import create_db_connection_from_secrets
@@ -112,7 +112,7 @@ def main():
         database="noble_db_v2"
     )
     
-    input_df, start_id, end_id, year, month, day = run_incremental_job(spark)
+    input_df, start_id, end_id, year, month, day, proposed_state = run_incremental_job(spark)
 
     if input_df is not None:
         input_df = input_df.na.fill({"raw": "{}"}).filter(
@@ -135,9 +135,9 @@ def main():
             for t, df in table_dict.items():
                 if df is not None:
                     # Use limit(1).count() to check existence without triggering a full NPE-prone scan
-                    if df.limit(1).count() > 0:
-                        # Drop rows that somehow resulted in a null ID from the UDF
-                        clean[t] = df.filter(F.col("id").isNotNull())
+                    # if df.limit(1).count() > 0:
+                    #     # Drop rows that somehow resulted in a null ID from the UDF
+                    clean[t] = df.filter(F.col("id").isNotNull()).dropDuplicates(["id"])
             return clean
 
         if(success_tables is not None):
@@ -168,10 +168,10 @@ def main():
                     
                 # Check if df is empty before calling write_dataframe_to_s3
                 # This saves time and avoids logging "Success" for 0 rows
-                if df.limit(1).count() == 0:
-                    print(f"Skipping {t}: DataFrame is empty (0 rows).")
-                    continue
-                print(f"Writing {t} to Success: {df.count()} rows")
+                # if df.limit(1).count() == 0:
+                #     print(f"Skipping {t}: DataFrame is empty (0 rows).")
+                #     continue
+                print(f"Writing {t} to Success")
                 db_conn.write_dataframe_to_s3(
                     processed_dfs={t: df},
                     start_id=start_id, end_id=end_id,
@@ -182,13 +182,18 @@ def main():
         # 2. Process Failed records (S3 Only)
         if final_failure:
             for t, df in final_failure.items():
-                print(f"Writing {t} to Failed: {df.count()} rows")
+                print(f"Writing {t} to Failed")
             db_conn.write_dataframe_to_s3(
                 processed_dfs=final_failure,
                 start_id=start_id, end_id=end_id,
                 year=year, month=month, day=day,
                 succeeded=False
             )
+        
+        if proposed_state:
+            state_manager = S3StateManager(IncrementalJobConfig.BUCKET_NAME, IncrementalJobConfig.STATE_FILE_KEY)
+            state_manager.update_state(proposed_state)
+            print("JOB SUCCESSFUL: Progress state updated in S3.")
 
     else:
         print("No input data found")

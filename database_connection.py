@@ -223,6 +223,10 @@ class DatabaseConnection:
                 .option("driver", properties["driver"]) \
                 .option("batchsize", batch_size) \
                 .option("rewriteBatchedStatements", "true") \
+                .option("rewriteBatchedStatements", "true") \
+                .option("useLocalSessionState", "true") \
+                .option("cachePrepStmts", "true") \
+                .option("prepStmtCacheSize", "250") \
                 .mode(mode) \
                 .save()
             print(f"Successfully inserted {row_count} data into {table_name}")
@@ -254,6 +258,7 @@ class DatabaseConnection:
             succeeded: Status flag to determine the S3 folder path (succeeded/failed)
         """
         base_s3_path = "s3://noble-stage-useast1-183171473439-prod/source=sky-touch-raw/schema=reservation"
+        audit_base_path = "s3://noble-stage-useast1-183171473439-prod/source=sky-touch-raw/schema=reservation/audit_ids"
 
         for table_name, table_df in processed_dfs.items():
             # Construct the specific S3 URI for this table and ID range
@@ -280,6 +285,61 @@ class DatabaseConnection:
                             table_name=table_name,
                             mode="append"
                         )
+
+
+                        # 2. Audit Sync with Self-Compaction Logic
+                        s3_resource = boto3.resource('s3')
+                        bucket_name = "noble-stage-useast1-183171473439-prod"
+
+                        for table_name, table_df in processed_dfs.items():
+                            audit_path = f"s3://{bucket_name}/source=sky-touch-raw/schema=reservation/audit_ids/{table_name}/"
+                            prefix = f"source=sky-touch-raw/schema=reservation/audit_ids/{table_name}/"
+                            
+                            # Count how many files are currently in the audit folder
+                            bucket = s3_resource.Bucket(bucket_name)
+                            file_count = sum(1 for _ in bucket.objects.filter(Prefix=prefix) if _.key.endswith('.parquet'))
+
+                            new_ids_df = table_df.select("id")
+
+                            if file_count > 20: 
+                                # COMPACTION TRIGGERED: 
+                                # Merge existing history with the new batch and overwrite
+                                print(f"Compacting Audit Store for {table_name} (Files: {file_count})")
+                                
+                                # 1. Define paths
+                                temp_prefix = prefix.rstrip('/') + "_temp/"
+                                temp_path = f"s3://{bucket_name}/{temp_prefix}"
+                                
+                                try:
+                                    existing_ids = table_df.sparkSession.read.parquet(audit_path)
+                                    # Union new IDs with old ones
+                                    total_ids = existing_ids.union(new_ids_df).dropDuplicates(["id"])
+                                    
+                                    # 2. Write to TEMP
+                                    total_ids.coalesce(1).write.mode("overwrite").parquet(temp_path)
+                                    
+                                    # Now overwrite the main folder from the temp
+                                    table_df.sparkSession.read.parquet(temp_path).write.mode("overwrite").parquet(audit_path)
+
+                                    # 4. CLEANUP: Delete the temp folder from S3
+                                    print(f"Cleaning up temp folder: {temp_prefix}")
+                                    bucket.objects.filter(Prefix=temp_prefix).delete()
+
+                                    print(f"Compact successful and temp cleaned for {table_name}.")
+                                except Exception as e:
+                                    print(f"Compaction failed for {table_name}, falling back to append: {e}")
+                                    new_ids_df.coalesce(1).write.mode("append").parquet(audit_path)
+                            
+                            else:
+                                # STANDARD APPEND: Keep it fast
+                                new_ids_df.coalesce(1).write.mode("append").parquet(audit_path)
+
+
+                        # ONLY updating the Audit ID list if the DB write worked!
+                        # audit_path = f"{audit_base_path}/{table_name}/"
+                        # table_df.select("id").write.mode("append").parquet(audit_path)
+                        # table_df.select("id").coalesce(1).write.mode("append").parquet(audit_path)
+                        print(f"Synced {table_name} IDs to S3 Audit Store.")
 
                 else:
                     print(f"Skipping {table_name}: DataFrame is empty.")

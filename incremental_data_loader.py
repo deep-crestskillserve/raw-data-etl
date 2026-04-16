@@ -319,7 +319,7 @@ class IncrementalJobRunner:
         self.state_manager = S3StateManager(config.BUCKET_NAME, config.STATE_FILE_KEY)
         self.data_processor = DataProcessor(spark_session)
     
-    def run(self) -> Tuple[Optional[DataFrame], Optional[int], Optional[int], Optional[str], Optional[str], Optional[str]]:
+    def run(self) -> Tuple[Optional[DataFrame], Optional[int], Optional[int], Optional[str], Optional[str], Optional[str], Optional[Dict]]:
         """
         Execute the incremental job.
         
@@ -369,9 +369,9 @@ class IncrementalJobRunner:
             
             if new_state:
                 # 3. Update S3 state.json
-                self.state_manager.update_state(new_state)
-                print(f"Processed batch IDs: {min_id} to {max_id} ({count} rows)")
-                print(f"Updated to partition: year={new_state['last_year']}, month={new_state['last_month']}, day={new_state['last_day']}")
+                # self.state_manager.update_state(new_state)
+                # print(f"Processed batch IDs: {min_id} to {max_id} ({count} rows)")
+                # print(f"Updated to partition: year={new_state['last_year']}, month={new_state['last_month']}, day={new_state['last_day']}")
                 
                 # 4. Extract the logical partition values from the state we just saved
                 year = new_state['last_year']
@@ -381,7 +381,7 @@ class IncrementalJobRunner:
                 print(f"Processed batch IDs: {min_id} to {max_id}")
                 print(f"State Updated to Partition: year={year}, month={month}, day={day}")
                 
-                return processed_df, min_id, max_id, year, month, day
+                return processed_df, min_id, max_id, year, month, day, new_state
         
         return None, None, None, None, None, None
 
