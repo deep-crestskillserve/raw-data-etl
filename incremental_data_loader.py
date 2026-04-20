@@ -330,7 +330,7 @@ class IncrementalJobRunner:
 
         or
         
-        None, None, None
+        None, None, None, None, None, None, None
         """
         state = self.state_manager.get_state()
         current_date = datetime.now()
@@ -344,7 +344,7 @@ class IncrementalJobRunner:
         )
         
         if not files_to_read:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
         
         # Read and process data        
         processed_df = self.data_processor.read_and_filter(
@@ -355,7 +355,7 @@ class IncrementalJobRunner:
         )
         
         if processed_df is None:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
         
         count = processed_df.count()
         
@@ -378,15 +378,15 @@ class IncrementalJobRunner:
                 month = new_state['last_month']
                 day = new_state['last_day']
                 
-                print(f"Processed batch IDs: {min_id} to {max_id}")
+                print(f"Processed batch IDs: {min_id} to {max_id} ({count} rows)")
                 print(f"State Updated to Partition: year={year}, month={month}, day={day}")
                 
                 return processed_df, min_id, max_id, year, month, day, new_state
         
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
 
-def run_incremental_job(spark: SparkSession) -> Tuple[Optional[DataFrame], Optional[int], Optional[int], Optional[str], Optional[str], Optional[str]]:
+def run_incremental_job(spark: SparkSession) -> Tuple[Optional[DataFrame], Optional[int], Optional[int], Optional[str], Optional[str], Optional[str], Optional[Dict]]:
     """
     Main entry point for the incremental job.
     Returns a DataFrame with 'id', 'datetime_received', and cleaned 'raw' columns.
@@ -395,7 +395,7 @@ def run_incremental_job(spark: SparkSession) -> Tuple[Optional[DataFrame], Optio
 
     or
     
-    None, None, None
+    None, None, None, None, None, None, None
     """
     config = IncrementalJobConfig()
     
